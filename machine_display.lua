@@ -8,23 +8,22 @@ local keyboard     = require("keyboard")
 local gpu          = component.gpu
 
 -- === CONFIG ===
-local title         = "== GTNH Machine Monitor =="
-local adapter_type  = "gt_machine"
 local mapping_file  = "/home/f_machine_mapping.lua"
+local config_file   = "/home/f_config.lua"
+local config        = {}
 local updateInterval= 0.2
 local barWidth      = 35
 local columnWidth   = barWidth + 2
 local startLine     = 3
 local linesPerMachine = 3
-
 gpu.setResolution(80, 25)
 local screenW, screenH = gpu.getResolution()
 
 -- === VARIABLES ===
-local machineMap = {}
+local mapping = {}
 local adapters   = {}
 
--- === DRAW HELPERS ===
+-- === HELPERS ===
 local function drawProgressBar(x, y, width, active, current, max)
   local percent = (max > 0) and (current / max * 100) or 0
   local eta     = (max - current) / 20
@@ -38,33 +37,73 @@ local function drawProgressBar(x, y, width, active, current, max)
   gpu.set(x + width - 5, y, string.format(" %.1fs", eta))
 end
 
--- === MAPPING LOADING ===
 local function sortByCoords()
-  table.sort(machineMap, function(a,b)
+  table.sort(adapters, function(a,b)
     if a.coords.x ~= b.coords.x then return a.coords.x < b.coords.x
     elseif a.coords.y ~= b.coords.y then return a.coords.y < b.coords.y
     else return a.coords.z < b.coords.z end
   end)
 end
 
+local function getName(address)
+  for _, entry in ipairs(mapping) do
+    if entry.address == address then
+      return entry.name or "Unknown"
+    end
+  end
+end
+
+local function getCoords(address)
+  for _, entry in ipairs(mapping) do
+    if entry.address == address then
+      return entry.coords or 0,0,0
+    end
+  end
+end
+
+local function getConfigValue(config, key)
+  for _, entry in ipairs(config) do
+    if entry.key == key then
+      return entry.value
+    end
+  end
+end
+
+-- === LOADING ===
+
 local function loadMapping()
   if not fs.exists(mapping_file) then
-    term.clear()
-    error("Mapping file not found. Create machine_mapping.lua first.")
+    return
   end
   local f = io.open(mapping_file, "r")
   local content = f:read("*a"); f:close()
-  machineMap = load("return "..content)()
+  mapping = load("return "..content)()
   sortByCoords()
+end
+
+
+local function loadConfig()
+  if not fs.exists(config_file) then
+    return
+  end
+  local f = io.open(config_file, "r")
+  local content = f:read("*a"); f:close()
+  local loaded_config = load("return "..content)()
+
+  config.title = getConfigValue(loaded_config, "title")
+  config.update_interval = tonumber(getConfigValue(loaded_config, "update_interval"))
+  config.adapter_type = getConfigValue(loaded_config, "adapter_type")
 end
 
 -- === WRAP MACHINES ===
 local function wrapMachines()
   adapters = {}
-  for _, entry in ipairs(machineMap) do
-    local proxy = component.proxy(entry.address)
+  for address, _  in pairs(component.list(config.adapter_type)) do
+    print(address)
+    local proxy = component.proxy(address)
     table.insert(adapters, {
-      name = entry.name,
+      name = getName(address),
+      coords = getCoords(address),
       isMachineActive = function()
         return proxy.isMachineActive and proxy.isMachineActive() or false
       end,
@@ -72,12 +111,14 @@ local function wrapMachines()
       getWorkMaxProgress= proxy.getWorkMaxProgress and function() return proxy.getWorkMaxProgress() end
     })
   end
+  sortByCoords()
 end
 
 -- === DRAW UI ===
 local function drawUI()
   gpu.fill(1,1,screenW,screenH," ")
-  gpu.set(1,1,title)
+  local titleLine = string.format("== %s ==", config.title)
+  gpu.set((screenW / 2) - (#titleLine / 2),1,titleLine)
   local leftLine, rightLine = startLine, startLine
   local rowsPerColumn     = math.floor((screenH-startLine)/linesPerMachine)
 
@@ -97,11 +138,19 @@ local function drawUI()
   end
 end
 
+print("Loading Config")
+loadConfig()
+os.sleep(0.2)
+print("Loading Mapping")
 loadMapping()
+os.sleep(0.2)
+print("Loading Data")
 wrapMachines()
+os.sleep(0.2)
+print("Starting...")
 
 while true do
-  local ev = { event.pull(updateInterval, "key_down") }
+  local ev = { event.pull(config.update_interval, "key_down") }
   if ev[1] == "key_down" then
     local _, _, _, code = table.unpack(ev)
     if (code == keyboard.keys.w or code == keyboard.keys.q) and keyboard.isControlDown() then

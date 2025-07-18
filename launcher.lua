@@ -4,9 +4,8 @@ local os    = require("os")
 local component = require("component")
 local gpu   = component.gpu
 
-
 -- Config
-local mapping_file      = "/home/machine_mapping.lua"
+local mapping_file      = "/home/f_machine_mapping.lua"
 local editor_script     = "/home/mapping_editor.lua"
 local display_script    = "/home/machine_display.lua"
 
@@ -32,7 +31,7 @@ local function showMenu()
   if fs.exists(mapping_file) then
     print("2) Run machine array display")
   else
-    print("2) Run machine array display (requires mapping — unavailable)")
+    print("2) Run machine array display (no mapping file created)")
   end
   print("0) Exit")
   io.write("\nSelect an option: ")
@@ -48,14 +47,10 @@ while true do
     os.execute(editor_script)
     pause()
   elseif choice == "2" then
-    if fs.exists(mapping_file) then
-      clearScreen()
-      print("Launching Machine Array Display...\n")
-      os.execute(display_script)
-    else
-      print("\nMapping file not found. Please create it first.")
-      pause()
-    end
+    clearScreen()
+    print("Launching Machine Array Display...\n")
+    os.execute(display_script)
+    pause()
   elseif choice == "0" then
     clearScreen()
     print("Goodbye!")
