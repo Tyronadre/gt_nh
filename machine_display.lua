@@ -10,7 +10,7 @@ local gpu          = component.gpu
 -- === CONFIG ===
 local title         = "== GTNH Machine Monitor =="
 local adapter_type  = "gt_machine"
-local mapping_file  = "/home/machine_mapping.lua"
+local mapping_file  = "/home/f_machine_mapping.lua"
 local updateInterval= 0.2
 local barWidth      = 35
 local columnWidth   = barWidth + 2
@@ -104,7 +104,7 @@ while true do
   local ev = { event.pull(updateInterval, "key_down") }
   if ev[1] == "key_down" then
     local _, _, _, code = table.unpack(ev)
-    if code == keyboard.keys.q and keyboard.isControlDown() then
+    if (code == keyboard.keys.w or code == keyboard.keys.q) and keyboard.isControlDown() then
       term.clear()
       os.exit()
     end

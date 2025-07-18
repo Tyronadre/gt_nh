@@ -1,11 +1,14 @@
 local fs    = require("filesystem")
 local term  = require("term")
 local os    = require("os")
+local component = require("component")
+local gpu   = component.gpu
+
 
 -- Config
-local mapping_file      = "machine_mapping.lua"
-local editor_script     = "mapping_editor.lua"
-local display_script    = "machine_display.lua"
+local mapping_file      = "/home/machine_mapping.lua"
+local editor_script     = "/home/mapping_editor.lua"
+local display_script    = "/home/machine_display.lua"
 
 -- Vars
 local screenW, screenH = gpu.getResolution()
@@ -43,6 +46,7 @@ while true do
     clearScreen()
     print("Launching Mapping Editor...\n")
     os.execute(editor_script)
+    pause()
   elseif choice == "2" then
     if fs.exists(mapping_file) then
       clearScreen()

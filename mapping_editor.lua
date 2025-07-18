@@ -8,15 +8,59 @@ local keyboard   = require("keyboard")
 
 -- === Config ===
 local adapter_type = "gt_machine"
-local mapping_file = "/home/machine_mapping.lua"
+local mapping_file = "/home/f_machine_mapping.lua"
+local config_file  = "/home/f_config.lua"
 
 -- === State ===
 local screenW, screenH = gpu.getResolution()
 local selected        = 1
 local hint            = ""
 local mapping         = {}
+local config          = {}
 
 -- === Helpers ===
+
+local function pause()
+  io.write("\nPress Enter to continue...")
+  io.read()
+end
+
+local function getTempValue(id)
+  local sel = id or selected
+  if sel <= #config then
+    return config[sel].temp_value
+  else 
+    return mapping[sel - #config].temp_value
+  end
+end
+
+local function setTempValue(tempValue, id)
+  local sel = id or selected
+  if sel <= #config then
+    config[sel].temp_value = tempValue
+  else 
+    mapping[sel - #config].temp_value = tempValue
+  end
+end
+
+local function getValue(id)
+  local sel = id or selected
+  if sel <= #config then
+    return config[sel]
+  else 
+    return mapping[sel - #config]
+  end
+end
+
+local function setValue(newValue, id)
+  local sel = id or selected
+  if sel <= #config then
+    config[sel].value = value
+  else 
+    mapping[sel - #config].name = value
+  end
+end
+
 local function sortByCoords()
   table.sort(mapping, function(a, b)
     if     a.coords.x ~= b.coords.x then return a.coords.x < b.coords.x
@@ -49,8 +93,16 @@ local function reloadFromAdapters()
   sortByCoords()
 end
 
-local function loadMapping()
-  if fs.exists(mapping_file) == true then
+local function createConfig() 
+  config = {
+    {key = "title", value = "GTNH Machine Monitor"},
+    {key = "adapter_type", value = "gt_machine"},
+    {key = "update_interval", value = 0.1}
+  }
+end
+
+local function loadFiles()
+  if fs.exists(mapping_file) then
     local f = io.open(mapping_file, "r")
     local content = f:read("*a"); f:close()
     mapping = load("return "..content)()
@@ -62,49 +114,79 @@ local function loadMapping()
   end
   sortByCoords()
   if selected > #mapping then selected = #mapping end
+
+  if fs.exists(config_file) then
+    local f = io.open(config_file, "r")
+    local content = f:read("*a"); f:close()
+    config = load("return "..content)()
+  else 
+    createConfig()
+    local f = io.open(config_file, "w")
+    f:write(serialization.serialize(config))
+    f:close()
+  end
 end
 
-local function saveMapping()
+local function saveFiles()
   local f = io.open(mapping_file, "w")
   for _, entry in ipairs(mapping) do
-    if entry.new_name and #entry.new_name > 0 then
-      entry.name = entry.new_name
-      entry.new_name = nil
+    if entry.temp_value and #entry.temp_value > 0 then
+      entry.name = entry.temp_value
+      entry.temp_value = nil
     end
   end
-  print(serialization.serialize(mapping))
+
+  for _, entry in ipairs(config) do
+    if entry.temp_value and #entry.temp_value > 0 then
+      entry.value = entry.temp_value
+      entry.temp_value = nil
+    end
+  end
   f:write(serialization.serialize(mapping))
+  f:close()
+
+  local f = io.open(config_file, "w")
+  f:write(serialization.serialize(config))
   f:close()
 end
 
 local function drawUI()
   term.clear()
-  gpu.set(1,1,"== Machine Mapping Editor == ")
-  local maxItems = screenH - 4
-  for i = 1, math.min(#mapping, maxItems) do
-    local m    = mapping[i]
+  gpu.set(1,1,"== Machine Array Config == ")
+  for i = 1, #config do
+    local c = config[i]
     local mark = (i == selected) and ">" or " "
-    local name = m.name or ""
-    local tail = string.format(" (%s) @ (%d,%d,%d)", m.address:sub(1,6), m.coords.x, m.coords.y, m.coords.z)
-    local line = string.format("%s [%d] %s", mark, i, name) .. tail
-    if mapping[i].new_name ~= nil then
-      line = line .. " -> " .. mapping[i].new_name
+    local line = string.format("%s [%d] %s -- %s", mark, i, c.key, tostring(c.value))
+    if getTempValue(i) ~= nil then
+      line = line .. " -> " .. getTempValue(i)
     end
 
-    gpu.set(1, i+2, line:sub(1, screenW))
+    gpu.set(1, i + 2, line:sub(1, screenW))
+  end
+    
+  gpu.set(1, #config + 4,"== Machine Mapping Editor == ")
+  local maxItems = screenH - 4
+  for i = 1, math.min(#mapping, maxItems) do
+    local id = i + #config
+    local m    = mapping[i]
+    local mark = (id == selected) and ">" or " "
+    local name = m.name or ""
+    local tail = string.format(" (%s) @ (%d,%d,%d)", m.address:sub(1,6), m.coords.x, m.coords.y, m.coords.z)
+    local line = string.format("%s [%d] %s", mark, id, name) .. tail
+    if getTempValue(id) ~= nil then
+      line = line .. " -> " .. getTempValue(id)
+    end
+
+    gpu.set(1, i+5+#config, line:sub(1, screenW))
   end
 
   if hint ~= "" then
     gpu.set(1, screenH-1, hint:sub(1, screenW))
   end
 
-  gpu.set(1, screenH, "[Ctrl+S] Save  [Ctrl+R] Reload  [Ctrl+D] Delete  [Ctrl+Q] Quit")
+  gpu.set(1, screenH, "[Ctrl+S] Save  [Ctrl+R] Reload Mapping  [Ctrl+W] Exit  [AnyKey] Edit Name")
 end
 
-local function deleteEntry(idx)
-  table.remove(mapping, idx)
-  if selected > #mapping then selected = #mapping end
-end
 
 -- === Event Handler ===
 local function onKeyDown(char, code)
@@ -115,36 +197,39 @@ local function onKeyDown(char, code)
 
   if keyboard.isControlDown() then
     if code == keyboard.keys.s then       -- Ctrl+S
-      saveMapping()
-      hint = "Mapping saved."
+      saveFiles()
+      hint = "Files saved."
     elseif code == keyboard.keys.r then   -- Ctrl+R
       reloadFromAdapters()
       hint = "Mapping reloaded."
-    elseif code == keyboard.keys.d then   -- Ctrl+D
-      deleteEntry(selected)
-      hint = "Entry deleted."
-    elseif code == keyboard.keys.q then
+    elseif code == keyboard.keys.w then
       term.clear()
       os.exit()
     end
   else
     if code == keyboard.keys.up then
-      selected = math.max(1, selected - 1)
+      selected = selected - 1
+      if selected == 0 then
+        selected = #mapping + #config
+      end
     elseif code == keyboard.keys.down then
-      selected = math.min(#mapping, selected + 1)
+      selected = selected + 1
+      if selected > #mapping + #config then
+        selected = 1
+      end
     elseif code == 14 then
-      local name = mapping[selected].new_name
-      if name ~= nil and #name > 0 then
-        if #name == 1 then
-          mapping[selected].new_name = nil
+      local value = getTempValue()
+      if value ~= nil and #value > 0 then
+        if #value == 1 then
+          setTempValue(nil)
         else
-          mapping[selected].new_name = name:sub(1, #name - 1)
+          setTempValue(value:sub(1, #value - 1))
         end
       end
     elseif char and char >= 32 and char <= 126 then
-      mapping[selected].new_name = (mapping[selected].new_name or "") .. string.char(char)
+      setTempValue((getTempValue() or "") .. string.char(char))
     end
-    end
+  end
 end
 
 local function handleEvent(eventType, ...)
@@ -152,14 +237,12 @@ local function handleEvent(eventType, ...)
 
   if eventType == "key_down" then
     onKeyDown(arg[2], arg[3])
-  elseif eventType == "touch" then
-    -- Handle touch events if needed
   end
   drawUI()
 end
 
 -- === Main ===
-loadMapping()
+loadFiles()
 drawUI()
 while true do
   handleEvent(event.pull())
