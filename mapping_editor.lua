@@ -7,7 +7,7 @@ local gpu        = component.gpu
 local keyboard   = require("keyboard")
 
 -- === Config ===
-local adapter_type = "gt_machine"
+local default_adapter_type = "gt_machine"
 local mapping_file = "/home/f_machine_mapping.lua"
 local config_file  = "/home/f_config.lua"
 
@@ -46,9 +46,9 @@ end
 local function getValue(id)
   local sel = id or selected
   if sel <= #config then
-    return config[sel]
+    return config[sel].value
   else 
-    return mapping[sel - #config]
+    return mapping[sel - #config].value
   end
 end
 
@@ -71,6 +71,8 @@ end
 
 local function reloadFromAdapters()
   local found = {}
+  local adapter_type = getValue(2)
+  if not adapter_type then adapter_type = default_adapter_type end
   for addr in component.list(adapter_type) do
     local proxy = component.proxy(addr)
     local existing
@@ -102,6 +104,17 @@ local function createConfig()
 end
 
 local function loadFiles()
+  if fs.exists(config_file) then
+    local f = io.open(config_file, "r")
+    local content = f:read("*a"); f:close()
+    config = load("return "..content)()
+  else 
+    createConfig()
+    local f = io.open(config_file, "w")
+    f:write(serialization.serialize(config))
+    f:close()
+  end
+
   if fs.exists(mapping_file) then
     local f = io.open(mapping_file, "r")
     local content = f:read("*a"); f:close()
@@ -114,17 +127,6 @@ local function loadFiles()
   end
   sortByCoords()
   if selected > #mapping then selected = #mapping end
-
-  if fs.exists(config_file) then
-    local f = io.open(config_file, "r")
-    local content = f:read("*a"); f:close()
-    config = load("return "..content)()
-  else 
-    createConfig()
-    local f = io.open(config_file, "w")
-    f:write(serialization.serialize(config))
-    f:close()
-  end
 end
 
 local function saveFiles()
@@ -201,7 +203,7 @@ local function onKeyDown(char, code)
       hint = "Files saved."
     elseif code == keyboard.keys.r then   -- Ctrl+R
       reloadFromAdapters()
-      hint = "Mapping reloaded."
+      hint = "Mapping reloaded. "
     elseif code == keyboard.keys.w then
       term.clear()
       os.exit()
