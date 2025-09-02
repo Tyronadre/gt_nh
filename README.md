@@ -7,4 +7,6 @@ Currently features
 
 
 To execute the installer execute the following command in a computer with an internet card:
-'''wget https://raw.githubusercontent.com/Tyronadre/gt_nh/refs/heads/main/installer.lua && installer.lua''
+```shell
+wget https://raw.githubusercontent.com/Tyronadre/gt_nh/refs/heads/main/installer.lua && installer.lua
+```
