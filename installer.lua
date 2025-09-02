@@ -239,7 +239,7 @@ local function main()
   local versionCheck = checkVersion(releases)
   print(checkVersion)
   if versionCheck then 
-    msg("Found a newer Version of the installer. Updating!")
+    msg("Found a newer version (" .. versionCheck.tag_name .." of the installer. Updating!")
     os.sleep(1)
     updateInstaller(versionCheck) 
     exit()
@@ -253,9 +253,10 @@ local function main()
   -- 4. Download
   term.clear()
   nextStep("Preparing download…")
-  if not release.assets then error("Release has no assets") end
+  fs.makeDirectory(INSTALL_DIR)
   local _, h = gpu.getResolution()
   local numberOfFiles = #(release.assets)
+  if not release.assets or numberOfFiles == 0 then error("Release has no assets") end
   for index, asset in ipairs(release.assets) do 
     local filename = asset.name
     local destFile = INSTALL_DIR.."/"..asset.name
