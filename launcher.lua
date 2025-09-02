@@ -4,16 +4,16 @@ local os = require("os")
 local component = require("component")
 local event = require("event")
 local gpu = component.gpu
+local keyboard = require("keyboard")
 
 -- Config
-<<<<<<< Updated upstream
 local base_path         = "/home/gtnh_monitor/"
 local mapping_file      = base_path .. "f_machine_mapping.lua"
 local editor_script     = base_path .. "mapping_editor.lua"
 local display_script    = base_path .. "machine_display.lua"
 
 -- Vars
-local screenW, screenH = gpu.getResolution()
+local screenW, screenH = gpu.maxResolution()
 
 -- Helpers
 local function clearScreen()
@@ -54,6 +54,7 @@ end
 
 -- Main
 local function showMenu()
+  gpu.setResolution(screenW, screenH)
   clearScreen()
   centerText(2, "== GT Machine Display Launcher ==", 0x00AAFF)
 

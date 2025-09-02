@@ -17,7 +17,7 @@ local barWidth      = 35
 local columnWidth   = barWidth + 2
 local startLine     = 3
 local linesPerMachine = 3
-gpu.setResolution(80, 25)
+--gpu.setResolution(80, 25)
 local screenW, screenH = gpu.getResolution()
 
 -- === VARIABLES ===
