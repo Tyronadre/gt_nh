@@ -24,7 +24,7 @@ end
 local jsonLib = "https://raw.githubusercontent.com/rxi/json.lua/refs/heads/master/json.lua"
 
 -- === CONFIG ===
-local VERSION           = "1.0.1"
+local VERSION           = "1.1"
 local REPO              = "Tyronadre/gt_nh"         -- owner/repo
 local INSTALL_DIR       = "/home/gtnh_monitor"
 local BOOT_FILE         = "/home/.shrc"             -- autostart via shell rc
@@ -56,7 +56,7 @@ local function writeFile(path, data, overwrite)
   elseif fs.exists(path) then error("File at "..path.." exists already.") end
   
   local f, e = io.open(path, "w")
-  if e then error("Error while opening file at "..path..": "..tostring(e)) end
+  if e then error("Error while opening file at "..path..": \n"..tostring(e)) end
   f:write(data)
   f:close()
 end
@@ -76,10 +76,24 @@ local function setColor(fg, bg)
   if bg and gpu.setBackground then gpu.setBackground(bg) end
 end
 
-local function centerText(y, text)
+local function centerText(startY, text)
   local w = ({gpu.getResolution()})[1]
-  local x = math.max(1, math.floor((w - #text)/2) + 1)
-  gpu.set(x, y, text)
+
+  local lines = {}
+  for line in text:gmatch("[^\n]+") do
+    while #line > w do
+      table.insert(lines, line:sub(1, w))
+      line = line:sub(w + 1)
+    end
+    table.insert(lines, line)
+  end
+
+  local y = startY
+  for _, line in ipairs(lines) do
+    local x = math.max(1, math.floor((w - #line) / 2) + 1)
+    gpu.set(x, y, line)
+    y = y + 1
+  end
 end
 
 local function drawBar(y, pct)
@@ -192,16 +206,9 @@ end
 
 -- === BOOT AUTOSTART ===
 local function writeBoot()
-  local launcherPath = INSTALL_DIR .. "/launcher.lua"
-  local bootContent = ([[-- Auto-start GTNH Machine Monitor
-local fs = require("filesystem")
-local shell = require("shell")
-if fs.exists(%q) then
-  shell.execute(%q)
-end]]):format(launcherPath, launcherPath)
   local f, e = io.open(BOOT_FILE, "w")
   if not f then error("Failed to write boot file: "..tostring(e)) end
-  f:write(bootContent); f:close()
+  f:write(INSTALL_DIR .. "/launcher.lua"); f:close()
 end
 
 -- === MAIN ===
@@ -212,8 +219,9 @@ local function main()
   local curW, curH = gpu.getResolution()
   if curW < setW or curH < setH then pcall(function() gpu.setResolution(setW, setH) end) end
 
-  -- 0. Install JSON and ZIP Libs
+  -- 0. Install Libs
   nextStep("Installing Libraries")
+  shell.setWorkingDirectory("/lib")
   if not fs.exists("/lib/json.lua") then 
     msg("Installing JSON")
     shell.execute("wget -fq " .. jsonLib)
@@ -231,7 +239,7 @@ local function main()
   local versionCheck = checkVersion(releases)
   print(checkVersion)
   if versionCheck then 
-    msg("Found a newer Version of the installer. Updating!")
+    msg("Found a newer version (" .. versionCheck.tag_name .." of the installer. Updating!")
     os.sleep(1)
     updateInstaller(versionCheck) 
     exit()
@@ -245,23 +253,18 @@ local function main()
   -- 4. Download
   term.clear()
   nextStep("Preparing download…")
-  if not release.assets then error("Release has no assets") end
+  fs.makeDirectory(INSTALL_DIR)
   local _, h = gpu.getResolution()
   local numberOfFiles = #(release.assets)
+  if not release.assets or numberOfFiles == 0 then error("Release has no assets") end
   for index, asset in ipairs(release.assets) do 
     local filename = asset.name
     local destFile = INSTALL_DIR.."/"..asset.name
     if not filename:match("%.lua") then goto continue end
     if filename:match("installer.lua") then goto continue end
-    statusLine(h-2, "Downloading "..filename, 0xAAAAFF)
+    statusLine(h-2, "Downloading "..filename.." ("..index.."/"..numberOfFiles..")", 0xAAAAFF)
     drawBar(h-1, index/numberOfFiles)
-    local data = fetch(asset.browser_download_url, false)
-    if fs.exists(destFile) then fs.remove(destFile) end
-    local f,e = io.open(destFile, "w")
-    if e then error("Error writing file "..destFile..": "..tostring(e))end
-    f:write(data)
-    f:close()
-    os.sleep(1)
+    writeFile(destFile,fetch(asset.browser_download_url, false), true)
     ::continue::
   end
 
