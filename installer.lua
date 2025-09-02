@@ -8,52 +8,38 @@ local shell      = require("shell")
 local component  = require("component")
 local gpu        = component.gpu
 local event      = require("event")
+local keyboard   = require("keyboard")
 
--- Internet module: OC can provide either require("internet") or component.internet
+-- == CHECK FOR INTERNET CARD
 local internet = nil
 do
   local ok, mod = pcall(require, "internet")
   if ok and mod then internet = mod
-  elseif component and component.isAvailable and component.isAvailable("internet") then
-    internet = component.internet
   else
     error("No internet component/module available. Install a network card and try again.")
   end
 end
 
+-- == JSON AND TAR INSTALLER
+local jsonLib = "https://raw.githubusercontent.com/rxi/json.lua/refs/heads/master/json.lua"
+
 -- === CONFIG ===
+local VERSION           = "1.0.1"
 local REPO              = "Tyronadre/gt_nh"         -- owner/repo
 local INSTALL_DIR       = "/home/gtnh_monitor"
 local BOOT_FILE         = "/home/.shrc"             -- autostart via shell rc
 local TMP_DIR           = "/tmp/gtnh_installer"
-local TAR_PATH          = TMP_DIR .. "/release.tar.gz"
 local ZIP_PATH          = TMP_DIR .. "/release.zip"
 local USE_RC_ALWAYS     = true                      -- write boot to .shrc
 
--- === TINY JSON PARSER (rxi/json.lua style – minimized) ===
-local json = {}
-function json.parse(str)
-  local pos = 1
-  local function ws() local _,e = str:find("^[ \n\r\t]*",pos); pos=(e or pos-1)+1 end
-  local function val()    
-    ws() local c = str:sub(pos,pos)    
-    if c == '"' then local i, res = pos+1, "" while i <= #str do local ch = str:sub(i,i) if ch == '"' then pos = i+1; return res        elseif ch == "\\" then          local n = str:sub(i+1,i+1); res = res .. (n == '"' or n == "\\" and n or ch); i = i + (n and 2 or 1)else res = res .. ch; i = i + 1 endend
-    elseif c:match("[%d%-]") then
-      local s,e = str:find("^-?%d+%.?%d*[eE]?[+-]?%d*",pos)
-      local n = tonumber(str:sub(s,e)); pos = e+1; return n
-    elseif str:sub(pos,pos+3) == "null"  then pos=pos+4; return nil
-    elseif str:sub(pos,pos+3) == "true"  then pos=pos+4; return true
-    elseif str:sub(pos,pos+4) == "false" then pos=pos+5; return false
-    elseif c == "{" then      pos = pos+1; ws(); local t = {}      if str:sub(pos,pos) == "}" then pos = pos+1; return t end      while true do        ws(); local k = val(); ws(); pos = pos+1        local v = val(); t[k] = v; ws()        local ch = str:sub(pos,pos)        if ch == "}" then pos = pos+1; break end os = pos+1      end      return t
-    elseif c == "[" then      pos = pos+1; ws(); local a = {}      if str:sub(pos,pos) == "]" then pos = pos+1; return a end      while true do        local v = val(); a[#a+1] = v; ws()        local ch = str:sub(pos,pos)        if ch == "]" then pos = pos+1; break end        pos = pos+1       end      return a
-    else      error("JSON parse error at pos "..pos.." (char '"..(c or "?").."')")    end
-  end
-  return val()
-end
+-- == VARIABLES
+local totalSteps = 6
+local step = 0
 
 -- === UTIL ===
 local function ensureTmp()
   if fs.exists(TMP_DIR) then
+    -- clean previous
     for file in fs.list(TMP_DIR) do fs.remove(fs.concat(TMP_DIR, file)) end
   else
     fs.makeDirectory(TMP_DIR)
@@ -61,10 +47,18 @@ local function ensureTmp()
 end
 
 local function cleanupTmp()
-  if fs.exists(TMP_DIR) then
-    for file in fs.list(TMP_DIR) do fs.remove(fs.concat(TMP_DIR, file)) end
-    fs.remove(TMP_DIR)
-  end
+  fs.remove(TMP_DIR)
+end
+
+local function writeFile(path, data, overwrite)
+  if overwrite then
+    if fs.exists(path) then fs.remove(path) end
+  elseif fs.exists(path) then error("File at "..path.." exists already.") end
+  
+  local f, e = io.open(path, "w")
+  if e then error("Error while opening file at "..path..": "..tostring(e)) end
+  f:write(data)
+  f:close()
 end
 
 local function fetch(url, binary)
@@ -76,15 +70,6 @@ local function fetch(url, binary)
   end
   return binary and table.concat(out) or out
 end
-
-local function fileWrite(path, data, mode)
-  local f, e = io.open(path, mode or "wb")
-  if not f then error("Open file failed: "..path.." ("..tostring(e)..")") end
-  f:write(data); f:close()
-end
-
-local function hasFile(path) return fs.exists(path) end
-local function hasCmdFile(cmd) return fs.exists("/bin/"..cmd) or fs.exists("/usr/bin/"..cmd) end
 
 local function setColor(fg, bg)
   if gpu.setForeground then gpu.setForeground(fg) end
@@ -102,8 +87,8 @@ local function drawBar(y, pct)
   local barW = math.max(10, math.floor(w * 0.6))
   local x = math.floor((w - barW)/2) + 1
   local fill = math.floor(barW * math.max(0, math.min(1, pct)))
-  setColor(0x00FF00); gpu.fill(x, y, fill, 1, " ")
-  setColor(0x444444); gpu.fill(x + fill, y, barW - fill, 1, " ")
+  setColor(0x00FF00); gpu.fill(x, y, fill, 1, "█")
+  setColor(0x444444); gpu.fill(x + fill, y, barW - fill, 1, "█")
   setColor(0xFFFFFF)
 end
 
@@ -116,14 +101,42 @@ end
 
 local function progress(step, total, msg)
   local _, h = gpu.getResolution()
-  statusLine(h-2, msg, 0xAAAAFF)
-  drawBar(h-1, step/total)
+  statusLine(h-4, msg, 0xAAAAFF)
+  drawBar(h-3, step/total)
 end
+
+local function nextStep(msg) step = step + 1; progress(step, totalSteps, msg) end
+
+local function msg(msg) progress(step, totalSteps, msg) end
 
 local function waitKeyOrTouch()
   while true do
     local ev = { event.pull() }
     if ev[1] == "key_down" or ev[1] == "touch" then return ev end
+  end
+end
+
+-- Checks if this installer is of the newest release version. if it is this function return nil, otherwise the release with the newest version
+local function checkVersion(releases) 
+  local newestRelease = nil
+  for _, release in ipairs(releases) do
+    local releaseVersion = release.tag_name
+    if VERSION < releaseVersion then
+      if not newestRelease then newestRelease = release
+      elseif newestRelease.tag_name < releaseVersion then newestRelease = release end
+    end
+  end
+  if newestRelease == "0.0.0" then return nil else return newestRelease end
+end
+
+local function updateInstaller(release) 
+  for _, asset in ipairs(release.assets) do
+    local assetName = asset.name
+    msg("Downloading "..assetName)
+    if assetName == "installer.lua" then writeFile("/home/installer.lua", fetch(asset.browser_download_url), true) end
+    msg("Executing new installer")
+    os.sleep(1)
+    os.execute("/home/installer.lua")
   end
 end
 
@@ -174,23 +187,7 @@ local function pickRelease(releases)
       end
     end
   end
-end
-
--- === EXTRACTORS ===
-local function extractTarGz(tarPath, destDir)
-  if not hasCmdFile("tar") then return false, "tar not found" end
-  local cmd = string.format("tar -xzf %q -C %q", tarPath, destDir)
-  local ok = os.execute(cmd)
-  if not ok then return false, "tar extraction failed" end
-  return true
-end
-
-local function extractZip(zipPath, destDir)
-  if not hasCmdFile("unzip") then return false, "unzip not found" end
-  local cmd = string.format("unzip -o %q -d %q", zipPath, destDir)
-  local ok = os.execute(cmd)
-  if not ok then return false, "unzip extraction failed" end
-  return true
+  term.clear()
 end
 
 -- === BOOT AUTOSTART ===
@@ -207,12 +204,7 @@ end]]):format(launcherPath, launcherPath)
   f:write(bootContent); f:close()
 end
 
--- === MAIN FLOW ===
-local totalSteps = 7
-local step = 0
-
-local function nextStep(msg) step = step + 1; progress(step, totalSteps, msg) end
-
+-- === MAIN ===
 local function main()
   term.clear()
   -- Ensure reasonable resolution
@@ -220,98 +212,69 @@ local function main()
   local curW, curH = gpu.getResolution()
   if curW < setW or curH < setH then pcall(function() gpu.setResolution(setW, setH) end) end
 
-  -- 0. If already installed, ask reinstall
-  setColor(0xFFFFFF)
-  if fs.exists(INSTALL_DIR) then
-    statusLine(4, "Already installed at "..INSTALL_DIR..". Reinstall? [Y/N]", 0xFFFF00)
-    local ev = waitKeyOrTouch()
-    if ev[1] == "key_down" then
-      local _, _, _, code, _, ch = table.unpack(ev)
-      if not (ch == 89 or ch == 121) then error("Installation aborted.") end
-    elseif ev[1] == "touch" then
-      -- Accept any touch as Yes for simplicity
-    end
-    -- wipe previous
-    for f in fs.list(INSTALL_DIR) do fs.remove(fs.concat(INSTALL_DIR, f)) end
-    fs.remove(INSTALL_DIR)
+  -- 0. Install JSON and ZIP Libs
+  nextStep("Installing Libraries")
+  if not fs.exists("/lib/json.lua") then 
+    msg("Installing JSON")
+    shell.execute("wget -fq " .. jsonLib)
   end
+  shell.setWorkingDirectory("/home")
+  msg("Libraries installed")
+  os.sleep(1)
 
-  ensureTmp()
-
-  -- 1. Fetch releases
+  -- 2. Fetch releases
   nextStep("Fetching releases from GitHub...")
   local releasesJSON = fetch("https://api.github.com/repos/"..REPO.."/releases", false)
-  local releases = json.parse(releasesJSON)
+  local json = require("json")
+  local releases = json.decode(releasesJSON)
   if not releases or #releases == 0 then error("No releases found for "..REPO) end
+  local versionCheck = checkVersion(releases)
+  print(checkVersion)
+  if versionCheck then 
+    msg("Found a newer Version of the installer. Updating!")
+    os.sleep(1)
+    updateInstaller(versionCheck) 
+    exit()
+  end
 
-  -- 2. Pick release (touch UI)
+  -- 3. Pick release
   nextStep("Choose a version…")
-  local release = pickRelease(releases)  -- throws on cancel
-  local tag = release.tag_name or "<unknown>"
-
-  -- 3. Decide extractor and asset URL (prefer tarball)
-  nextStep("Preparing download…")
-  local useTar = hasCmdFile("tar")
-  local downloadUrl = nil
-  local savePath = nil
-  if useTar and release.tarball_url then
-    nextStep("Using tar")
-    downloadUrl = release.tarball_url
-    savePath = TAR_PATH
-  elseif release.zipball_url then
-    nextStep("Using zip")
-    downloadUrl = release.zipball_url
-    savePath = ZIP_PATH
-  else
-    error("Release has neither tarball_url nor zipball_url.")
-  end
-  os.sleep(1000)
-
+  local release = pickRelease(releases)
+  local tag = release.tag_name or error("This release has not tag name")
+  
   -- 4. Download
-  nextStep("Downloading "..tag.." …")
-  local data = fetch(downloadUrl, true)  -- binary
-  fileWrite(savePath, data, "wb")
-
-  -- 5. Extract
-  nextStep("Extracting files…")
-  fs.makeDirectory(INSTALL_DIR)
-  local ok, err
-  if savePath == TAR_PATH then
-    ok, err = extractTarGz(TAR_PATH, INSTALL_DIR)
-    if not ok then
-      -- try zip fallback
-      if release.zipball_url and hasCmdFile("unzip") then
-        local zipData = fetch(release.zipball_url, true)
-        fileWrite(ZIP_PATH, zipData, "wb")
-        ok, err = extractZip(ZIP_PATH, INSTALL_DIR)
-      end
-    end
-  else
-    ok, err = extractZip(ZIP_PATH, INSTALL_DIR)
-  end
-  if not ok then error("Extraction failed: "..tostring(err)) end
-
-  -- NOTE: GitHub tarball/zip creates a top-level dir like: repo-<hash>/
-  -- Move contents up if needed (first directory inside INSTALL_DIR)
-  do
-    local first = nil
-    for name in fs.list(INSTALL_DIR) do first = name; break end
-    if first and fs.isDirectory(fs.concat(INSTALL_DIR, first)) then
-      local inner = fs.concat(INSTALL_DIR, first)
-      for name in fs.list(inner) do
-        fs.rename(fs.concat(inner, name), fs.concat(INSTALL_DIR, name))
-      end
-      fs.remove(inner)
-    end
+  term.clear()
+  nextStep("Preparing download…")
+  if not release.assets then error("Release has no assets") end
+  local _, h = gpu.getResolution()
+  local numberOfFiles = #(release.assets)
+  for index, asset in ipairs(release.assets) do 
+    local filename = asset.name
+    local destFile = INSTALL_DIR.."/"..asset.name
+    if not filename:match("%.lua") then goto continue end
+    if filename:match("installer.lua") then goto continue end
+    statusLine(h-2, "Downloading "..filename, 0xAAAAFF)
+    drawBar(h-1, index/numberOfFiles)
+    local data = fetch(asset.browser_download_url, false)
+    if fs.exists(destFile) then fs.remove(destFile) end
+    local f,e = io.open(destFile, "w")
+    if e then error("Error writing file "..destFile..": "..tostring(e))end
+    f:write(data)
+    f:close()
+    os.sleep(1)
+    ::continue::
   end
 
-  -- 6. Write boot autostart
+  -- 5. Write boot autostart
+  term.clear()
   nextStep("Configuring autostart…")
   writeBoot()
+  os.sleep(1)
 
-  -- 7. Done
+  -- 6. Done
   nextStep("Cleaning up…")
   cleanupTmp()
+  os.sleep(1)
 
   term.clear()
   setColor(0x00FF00); centerText(3, "Installation complete!"); setColor(0xFFFFFF)
@@ -319,6 +282,7 @@ local function main()
   centerText(7, "Auto-start configured via "..BOOT_FILE)
   centerText(9, "Press Enter to launch now, or any other key to exit.")
   local ev = { event.pull() }
+  term.clear()
   if ev[1] == "key_down" and select(4, table.unpack(ev)) == 28 then
     shell.execute(INSTALL_DIR.."/launcher.lua")
   end

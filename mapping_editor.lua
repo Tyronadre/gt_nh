@@ -8,8 +8,9 @@ local keyboard   = require("keyboard")
 
 -- === Config ===
 local default_adapter_type = "gt_machine"
-local mapping_file = "/home/f_machine_mapping.lua"
-local config_file  = "/home/f_config.lua"
+local base_path    = "/home/gtnh_monitor/"
+local mapping_file = base_path + "f_machine_mapping.lua"
+local config_file  = base_path + "f_config.lua"
 
 -- === State ===
 local screenW, screenH = gpu.getResolution()
