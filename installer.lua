@@ -27,7 +27,6 @@ local INSTALL_DIR       = "/home/gtnh_monitor"
 local BOOT_FILE         = "/home/.shrc"             -- autostart via shell rc
 local TMP_DIR           = "/tmp/gtnh_installer"
 local TAR_PATH          = TMP_DIR .. "/release.tar.gz"
-local ZIP_PATH          = TMP_DIR .. "/release.zip"
 local USE_RC_ALWAYS     = true                      -- write boot to .shrc
 
 -- === TINY JSON PARSER (rxi/json.lua style – minimized) ===
@@ -216,14 +215,6 @@ local function extractTarGz(tarPath, destDir)
   return true
 end
 
-local function extractZip(zipPath, destDir)
-  if not hasCmdFile("unzip") then return false, "unzip not found" end
-  local cmd = string.format("unzip -o %q -d %q", zipPath, destDir)
-  local ok = os.execute(cmd)
-  if not ok then return false, "unzip extraction failed" end
-  return true
-end
-
 -- === BOOT AUTOSTART ===
 local function writeBoot()
   local launcherPath = INSTALL_DIR .. "/launcher.lua"
@@ -282,17 +273,8 @@ local function main()
 
   -- 3. Decide extractor and asset URL (prefer tarball)
   nextStep("Preparing download…")
-  local useTar = hasCmdFile("tar")
-  local downloadUrl = nil
-  local savePath = nil
-  if useTar and release.tarball_url then
-    downloadUrl = release.tarball_url
-    savePath = TAR_PATH
-  elseif release.zipball_url then
-    downloadUrl = release.zipball_url
-    savePath = ZIP_PATH
-  else
-    error("Release has neither tarball_url nor zipball_url.")
+  local downloadUrl = release.tarball_url
+  local savePath = TAR_PATH
   end
 
   -- 4. Download
