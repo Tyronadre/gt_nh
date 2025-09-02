@@ -262,10 +262,9 @@ local function main()
     local destFile = INSTALL_DIR.."/"..asset.name
     if not filename:match("%.lua") then goto continue end
     if filename:match("installer.lua") then goto continue end
-    statusLine(h-2, "Downloading "..filename, 0xAAAAFF)
+    statusLine(h-2, "Downloading "..filename.." ("..index.."/"..numberOfFiles..")", 0xAAAAFF)
     drawBar(h-1, index/numberOfFiles)
     writeFile(destFile,fetch(asset.browser_download_url, false), true)
-    os.sleep(1)
     ::continue::
   end
 
