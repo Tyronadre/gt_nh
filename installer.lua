@@ -1,511 +1,363 @@
 -- installer.lua
--- Simple installer for GTNH Machine Monitor scripts
+-- Self-updating installer for GTNH Machine Monitor
+-- Features: GitHub releases picker (touch/keyboard), progress UI, tar/zip extract, boot autostart, cleanup.
 
-local fs = require("filesystem")
-local shell = require("shell")
-local term = require("term")
-
--- === CONFIG ===
-local scripts = {
-  launcher = [[
-local fs    = require("filesystem")
-local term  = require("term")
-local os    = require("os")
-local component = require("component")
-local gpu   = component.gpu
-
--- Config
-local mapping_file      = "/home/f_machine_mapping.lua"
-local editor_script     = "/home/mapping_editor.lua"
-local display_script    = "/home/machine_display.lua"
-
--- Vars
-local screenW, screenH = gpu.getResolution()
-
-local function clearScreen()
-  gpu.setResolution(screenW, screenH)
-  term.clear()
-  term.setCursor(1,1)
-end
-
-local function pause()
-  io.write("\nPress Enter to continue...")
-  io.read()
-end
-
-local function showMenu()
-  clearScreen()
-  print("== Machine Array Launcher ==")
-  print()
-  print("1) Edit mapping")
-  if fs.exists(mapping_file) then
-    print("2) Run machine array display")
-  else
-    print("2) Run machine array display (no mapping file created)")
-  end
-  print("0) Exit")
-  io.write("\nSelect an option: ")
-end
-
-while true do
-  showMenu()
-  local choice = io.read():match("%d")
-  if choice == "1" then
-    -- Launch the editor
-    clearScreen()
-    print("Launching Mapping Editor...\n")
-    os.execute(editor_script)
-    pause()
-  elseif choice == "2" then
-    clearScreen()
-    print("Launching Machine Array Display...\n")
-    os.execute(display_script)
-    pause()
-  elseif choice == "0" then
-    clearScreen()
-    print("Goodbye!")
-    break
-  else
-    print("\nInvalid selection.")
-    pause()
-  end
-end
-  ]],
-
-  machine_display = [[
-local component    = require("component")
-local term         = require("term")
-local os           = require("os")
-local fs           = require("filesystem")
-local serialization= require("serialization")
-local event        = require("event")
-local keyboard     = require("keyboard")
-local gpu          = component.gpu
-
--- === CONFIG ===
-local mapping_file  = "/home/f_machine_mapping.lua"
-local config_file   = "/home/f_config.lua"
-local config        = {}
-local updateInterval= 0.2
-local barWidth      = 35
-local columnWidth   = barWidth + 2
-local startLine     = 3
-local linesPerMachine = 3
-gpu.setResolution(80, 25)
-local screenW, screenH = gpu.getResolution()
-
--- === VARIABLES ===
-local mapping = {}
-local adapters   = {}
-
--- === HELPERS ===
-local function drawProgressBar(x, y, width, active, current, max)
-  local percent = (max > 0) and (current / max * 100) or 0
-  local eta     = (max - current) / 20
-  local fill    = math.floor((width - 5) * percent / 100)
-  local empty   = width - 5 - fill
-  local bar     = string.rep("█", fill) .. string.rep("░", empty)
-
-  gpu.setForeground(active and 0x00FF00 or 0xAAAAAA)
-  gpu.set(x, y, bar)
-  gpu.setForeground(0xFFFFFF)
-  gpu.set(x + width - 5, y, string.format(" %.1fs", eta))
-end
-
-local function sortByCoords()
-  table.sort(adapters, function(a,b)
-    if a.coords.x ~= b.coords.x then return a.coords.x < b.coords.x
-    elseif a.coords.y ~= b.coords.y then return a.coords.y < b.coords.y
-    else return a.coords.z < b.coords.z end
-  end)
-end
-
-local function getName(address)
-  for _, entry in ipairs(mapping) do
-    if entry.address == address then
-      return entry.name or "Unknown"
-    end
-  end
-end
-
-local function getCoords(address)
-  for _, entry in ipairs(mapping) do
-    if entry.address == address then
-      return entry.coords or 0,0,0
-    end
-  end
-end
-
-local function getConfigValue(config, key)
-  for _, entry in ipairs(config) do
-    if entry.key == key then
-      return entry.value
-    end
-  end
-end
-
--- === LOADING ===
-
-local function loadMapping()
-  if not fs.exists(mapping_file) then
-    return
-  end
-  local f = io.open(mapping_file, "r")
-  local content = f:read("*a"); f:close()
-  mapping = load("return "..content)()
-  sortByCoords()
-end
-
-
-local function loadConfig()
-  if not fs.exists(config_file) then
-    return
-  end
-  local f = io.open(config_file, "r")
-  local content = f:read("*a"); f:close()
-  local loaded_config = load("return "..content)()
-
-  config.title = getConfigValue(loaded_config, "title")
-  config.update_interval = tonumber(getConfigValue(loaded_config, "update_interval"))
-  config.adapter_type = getConfigValue(loaded_config, "adapter_type")
-end
-
--- === WRAP MACHINES ===
-local function wrapMachines()
-  adapters = {}
-  for address, _  in pairs(component.list(config.adapter_type)) do
-    print(address)
-    local proxy = component.proxy(address)
-    table.insert(adapters, {
-      name = getName(address),
-      coords = getCoords(address),
-      isMachineActive = function()
-        return proxy.isMachineActive and proxy.isMachineActive() or false
-      end,
-      getWorkProgress   = proxy.getWorkProgress   and function() return proxy.getWorkProgress()   end,
-      getWorkMaxProgress= proxy.getWorkMaxProgress and function() return proxy.getWorkMaxProgress() end
-    })
-  end
-  sortByCoords()
-end
-
--- === DRAW UI ===
-local function drawUI()
-  gpu.fill(1,1,screenW,screenH," ")
-  local titleLine = string.format("== %s ==", config.title)
-  gpu.set((screenW / 2) - (#titleLine / 2),1,titleLine)
-  local leftLine, rightLine = startLine, startLine
-  local rowsPerColumn     = math.floor((screenH-startLine)/linesPerMachine)
-
-  for i, m in ipairs(adapters) do
-    local active = m.isMachineActive()
-    local cur    = m.getWorkProgress()
-    local mx     = m.getWorkMaxProgress()
-    local isLeft = i <= rowsPerColumn
-    local x      = isLeft and 1 or (screenW - columnWidth +1)
-    local y      = isLeft and leftLine or rightLine
-
-    gpu.set(x, y, string.format("== %s ==", m.name))
-    drawProgressBar(x, y+1, barWidth, active, cur, mx)
-
-    if isLeft then leftLine  = leftLine  + linesPerMachine
-    else          rightLine = rightLine + linesPerMachine end
-  end
-end
-
-print("Loading Config")
-loadConfig()
-os.sleep(0.2)
-print("Loading Mapping")
-loadMapping()
-os.sleep(0.2)
-print("Loading Data")
-wrapMachines()
-os.sleep(0.2)
-print("Starting...")
-
-while true do
-  local ev = { event.pull(config.update_interval, "key_down") }
-  if ev[1] == "key_down" then
-    local _, _, _, code = table.unpack(ev)
-    if (code == keyboard.keys.w or code == keyboard.keys.q) and keyboard.isControlDown() then
-      term.clear()
-      os.exit()
-    end
-  end
-  drawUI()
-end
-
-  ]],
-
-  mapping_editor = [[
-local fs         = require("filesystem")
 local term       = require("term")
-local event      = require("event")
-local serialization = require("serialization")
+local fs         = require("filesystem")
+local shell      = require("shell")
 local component  = require("component")
 local gpu        = component.gpu
-local keyboard   = require("keyboard")
+local event      = require("event")
 
--- === Config ===
-local default_adapter_type = "gt_machine"
-local mapping_file = "/home/f_machine_mapping.lua"
-local config_file  = "/home/f_config.lua"
-
--- === State ===
-local screenW, screenH = gpu.getResolution()
-local selected        = 1
-local hint            = ""
-local mapping         = {}
-local config          = {}
-
--- === Helpers ===
-
-local function pause()
-  io.write("\nPress Enter to continue...")
-  io.read()
-end
-
-local function getTempValue(id)
-  local sel = id or selected
-  if sel <= #config then
-    return config[sel].temp_value
-  else 
-    return mapping[sel - #config].temp_value
+-- Internet module: OC can provide either require("internet") or component.internet
+local internet = nil
+do
+  local ok, mod = pcall(require, "internet")
+  if ok and mod then internet = mod
+  elseif component and component.isAvailable and component.isAvailable("internet") then
+    internet = component.internet
+  else
+    error("No internet component/module available. Install a network card and try again.")
   end
 end
 
-local function setTempValue(tempValue, id)
-  local sel = id or selected
-  if sel <= #config then
-    config[sel].temp_value = tempValue
-  else 
-    mapping[sel - #config].temp_value = tempValue
-  end
-end
+-- === CONFIG ===
+local REPO              = "Tyronadre/gt_nh"         -- owner/repo
+local INSTALL_DIR       = "/home/gtnh_monitor"
+local BOOT_FILE         = "/home/.shrc"             -- autostart via shell rc
+local TMP_DIR           = "/tmp/gtnh_installer"
+local TAR_PATH          = TMP_DIR .. "/release.tar.gz"
+local ZIP_PATH          = TMP_DIR .. "/release.zip"
+local USE_RC_ALWAYS     = true                      -- write boot to .shrc
 
-local function getValue(id)
-  local sel = id or selected
-  if sel <= #config then
-    return config[sel].value
-  else 
-    return mapping[sel - #config].value
-  end
-end
-
-local function setValue(newValue, id)
-  local sel = id or selected
-  if sel <= #config then
-    config[sel].value = value
-  else 
-    mapping[sel - #config].name = value
-  end
-end
-
-local function sortByCoords()
-  table.sort(mapping, function(a, b)
-    if     a.coords.x ~= b.coords.x then return a.coords.x < b.coords.x
-    elseif a.coords.y ~= b.coords.y then return a.coords.y < b.coords.y
-    else   return a.coords.z < b.coords.z end
-  end)
-end
-
-local function reloadFromAdapters()
-  local found = {}
-  local adapter_type = getValue(2)
-  if not adapter_type then adapter_type = default_adapter_type end
-  for addr in component.list(adapter_type) do
-    local proxy = component.proxy(addr)
-    local existing
-    for _, e in ipairs(mapping) do
-      if e.address == addr then existing = e; break end
-    end
-    if existing then
-      table.insert(found, existing)
+-- === TINY JSON PARSER (rxi/json.lua style – minimized) ===
+local json = {}
+function json.parse(str)
+  local pos = 1
+  local function ws() local _,e = str:find("^[ \n\r\t]*",pos); pos=(e or pos-1)+1 end
+  local function val()
+    ws()
+    local c = str:sub(pos,pos)
+    if c == '"' then
+      local i, res = pos+1, ""
+      while i <= #str do
+        local ch = str:sub(i,i)
+        if ch == '"' then pos = i+1; return res
+        elseif ch == "\\" then
+          local n = str:sub(i+1,i+1); res = res .. (n == '"' or n == "\\" and n or ch); i = i + (n and 2 or 1)
+        else res = res .. ch; i = i + 1 end
+      end
+    elseif c:match("[%d%-]") then
+      local s,e = str:find("^-?%d+%.?%d*[eE]?[+-]?%d*",pos)
+      local n = tonumber(str:sub(s,e)); pos = e+1; return n
+    elseif str:sub(pos,pos+3) == "null"  then pos=pos+4; return nil
+    elseif str:sub(pos,pos+3) == "true"  then pos=pos+4; return true
+    elseif str:sub(pos,pos+4) == "false" then pos=pos+5; return false
+    elseif c == "{" then
+      pos = pos+1; ws(); local t = {}
+      if str:sub(pos,pos) == "}" then pos = pos+1; return t end
+      while true do
+        ws(); local k = val(); ws(); pos = pos+1 -- :
+        local v = val(); t[k] = v; ws()
+        local ch = str:sub(pos,pos)
+        if ch == "}" then pos = pos+1; break end
+        pos = pos+1 -- ,
+      end
+      return t
+    elseif c == "[" then
+      pos = pos+1; ws(); local a = {}
+      if str:sub(pos,pos) == "]" then pos = pos+1; return a end
+      while true do
+        local v = val(); a[#a+1] = v; ws()
+        local ch = str:sub(pos,pos)
+        if ch == "]" then pos = pos+1; break end
+        pos = pos+1 -- ,
+      end
+      return a
     else
-      local name   = proxy.getName       and proxy.getName()       or "unknown"
-      local x,y,z       = proxy.getCoordinates and proxy.getCoordinates() or 0,0,0
-      table.insert(found, {
-        address = addr,
-        name    = name,
-        coords  = { x = x, y = y, z = z }
-      })
+      error("JSON parse error at pos "..pos.." (char '"..(c or "?").."')")
     end
   end
-  mapping = found
-  sortByCoords()
+  return val()
 end
 
-local function createConfig() 
-  config = {
-    {key = "title", value = "GTNH Machine Monitor"},
-    {key = "adapter_type", value = "gt_machine"},
-    {key = "update_interval", value = 0.1}
-  }
-end
-
-local function loadFiles()
-  if fs.exists(config_file) then
-    local f = io.open(config_file, "r")
-    local content = f:read("*a"); f:close()
-    config = load("return "..content)()
-  else 
-    createConfig()
-    local f = io.open(config_file, "w")
-    f:write(serialization.serialize(config))
-    f:close()
-  end
-
-  if fs.exists(mapping_file) then
-    local f = io.open(mapping_file, "r")
-    local content = f:read("*a"); f:close()
-    mapping = load("return "..content)()
+-- === UTIL ===
+local function ensureTmp()
+  if fs.exists(TMP_DIR) then
+    -- clean previous
+    for file in fs.list(TMP_DIR) do fs.remove(fs.concat(TMP_DIR, file)) end
   else
-    reloadFromAdapters()
-    local f = io.open(mapping_file, "w")
-    f:write(serialization.serialize(mapping))
-    f:close()
+    fs.makeDirectory(TMP_DIR)
   end
-  sortByCoords()
-  if selected > #mapping then selected = #mapping end
 end
 
-local function saveFiles()
-  local f = io.open(mapping_file, "w")
-  for _, entry in ipairs(mapping) do
-    if entry.temp_value and #entry.temp_value > 0 then
-      entry.name = entry.temp_value
-      entry.temp_value = nil
-    end
+local function cleanupTmp()
+  if fs.exists(TMP_DIR) then
+    for file in fs.list(TMP_DIR) do fs.remove(fs.concat(TMP_DIR, file)) end
+    fs.remove(TMP_DIR)
   end
-
-  for _, entry in ipairs(config) do
-    if entry.temp_value and #entry.temp_value > 0 then
-      entry.value = entry.temp_value
-      entry.temp_value = nil
-    end
-  end
-  f:write(serialization.serialize(mapping))
-  f:close()
-
-  local f = io.open(config_file, "w")
-  f:write(serialization.serialize(config))
-  f:close()
 end
 
-local function drawUI()
+local function fetch(url, binary)
+  local handle, err = internet.request(url)
+  if not handle then error("HTTP request failed: "..tostring(err)) end
+  local out = binary and {} or ""
+  for chunk in handle do
+    if binary then out[#out+1] = chunk else out = out .. chunk end
+  end
+  return binary and table.concat(out) or out
+end
+
+local function fileWrite(path, data, mode)
+  local f, e = io.open(path, mode or "wb")
+  if not f then error("Open file failed: "..path.." ("..tostring(e)..")") end
+  f:write(data); f:close()
+end
+
+local function hasFile(path) return fs.exists(path) end
+local function hasCmdFile(cmd) return fs.exists("/bin/"..cmd) or fs.exists("/usr/bin/"..cmd) end
+
+local function setColor(fg, bg)
+  if gpu.setForeground then gpu.setForeground(fg) end
+  if bg and gpu.setBackground then gpu.setBackground(bg) end
+end
+
+local function centerText(y, text)
+  local w = ({gpu.getResolution()})[1]
+  local x = math.max(1, math.floor((w - #text)/2) + 1)
+  gpu.set(x, y, text)
+end
+
+local function drawBar(y, pct)
+  local w = ({gpu.getResolution()})[1]
+  local barW = math.max(10, math.floor(w * 0.6))
+  local x = math.floor((w - barW)/2) + 1
+  local fill = math.floor(barW * math.max(0, math.min(1, pct)))
+  setColor(0x00FF00); gpu.fill(x, y, fill, 1, " ")
+  setColor(0x444444); gpu.fill(x + fill, y, barW - fill, 1, " ")
+  setColor(0xFFFFFF)
+end
+
+local function statusLine(line, msg, color)
+  setColor(color or 0xFFFFFF)
+  term.setCursor(1, line); term.clearLine()
+  centerText(line, msg)
+  setColor(0xFFFFFF)
+end
+
+local function progress(step, total, msg)
+  local _, h = gpu.getResolution()
+  statusLine(h-2, msg, 0xAAAAFF)
+  drawBar(h-1, step/total)
+end
+
+local function waitKeyOrTouch()
+  while true do
+    local ev = { event.pull() }
+    if ev[1] == "key_down" or ev[1] == "touch" then return ev end
+  end
+end
+
+-- === UI: releases picker (touch + keyboard) ===
+local function pickRelease(releases)
   term.clear()
-  gpu.set(1,1,"== Machine Array Config == ")
-  for i = 1, #config do
-    local c = config[i]
-    local mark = (i == selected) and ">" or " "
-    local line = string.format("%s [%d] %s -- %s", mark, i, c.key, tostring(c.value))
-    if getTempValue(i) ~= nil then
-      line = line .. " -> " .. getTempValue(i)
+  local w, h = gpu.getResolution()
+  setColor(0xFFFF00); centerText(1, "GTNH Machine Monitor — Installer"); setColor(0xFFFFFF)
+  centerText(3, "Select a version to install (tap a line or use arrows + Enter)")
+  local top = 5
+  local maxShow = h - top - 4
+  local start = 1
+  local sel = 1
+
+  local function draw()
+    for i = 0, maxShow-1 do
+      term.setCursor(1, top+i); term.clearLine()
+      local idx = start + i
+      if releases[idx] then
+        local label = string.format("%2d) %s", idx, releases[idx].tag_name or ("release "..idx))
+        if idx == sel then setColor(0x000000, 0xAAAAFF); gpu.fill(1, top+i, w, 1, " "); setColor(0x000000) end
+        gpu.set(3, top+i, label:sub(1, w-4))
+        setColor(0xFFFFFF, 0x000000)
+      end
     end
-
-    gpu.set(1, i + 2, line:sub(1, screenW))
+    centerText(h, "[Up/Down] move   [Enter/Tap] select   [Q] quit")
   end
-    
-  gpu.set(1, #config + 4,"== Machine Mapping Editor == ")
-  local maxItems = screenH - 4
-  for i = 1, math.min(#mapping, maxItems) do
-    local id = i + #config
-    local m    = mapping[i]
-    local mark = (id == selected) and ">" or " "
-    local name = m.name or ""
-    local tail = string.format(" (%s) @ (%d,%d,%d)", m.address:sub(1,6), m.coords.x, m.coords.y, m.coords.z)
-    local line = string.format("%s [%d] %s", mark, id, name) .. tail
-    if getTempValue(id) ~= nil then
-      line = line .. " -> " .. getTempValue(id)
+
+  draw()
+  while true do
+    local ev = { event.pull() }
+    if ev[1] == "key_down" then
+      local _, _, _, code, _, ch = table.unpack(ev)
+      if code == 200 then -- up
+        sel = math.max(1, sel-1); if sel < start then start = sel end; draw()
+      elseif code == 208 then -- down
+        sel = math.min(#releases, sel+1); if sel >= start + maxShow then start = sel - maxShow + 1 end; draw()
+      elseif code == 28 then -- enter
+        return releases[sel]
+      elseif code == 16 or ch == 113 then -- Q/q
+        error("Cancelled by user.")
+      end
+    elseif ev[1] == "touch" then
+      local _, _, x, y = table.unpack(ev)
+      if y >= top and y < top + maxShow then
+        local idx = start + (y - top)
+        if releases[idx] then return releases[idx] end
+      end
     end
-
-    gpu.set(1, i+5+#config, line:sub(1, screenW))
   end
-
-  if hint ~= "" then
-    gpu.set(1, screenH-1, hint:sub(1, screenW))
-  end
-
-  gpu.set(1, screenH, "[Ctrl+S] Save  [Ctrl+R] Reload Mapping  [Ctrl+W] Exit  [AnyKey] Edit Name")
 end
 
+-- === EXTRACTORS ===
+local function extractTarGz(tarPath, destDir)
+  if not hasCmdFile("tar") then return false, "tar not found" end
+  local cmd = string.format("tar -xzf %q -C %q", tarPath, destDir)
+  local ok = os.execute(cmd)
+  if not ok then return false, "tar extraction failed" end
+  return true
+end
 
--- === Event Handler ===
-local function onKeyDown(char, code)
-  if hint ~= "" then
-    gpu.set(1, screenH, hint)
-    hint = ""
+local function extractZip(zipPath, destDir)
+  if not hasCmdFile("unzip") then return false, "unzip not found" end
+  local cmd = string.format("unzip -o %q -d %q", zipPath, destDir)
+  local ok = os.execute(cmd)
+  if not ok then return false, "unzip extraction failed" end
+  return true
+end
+
+-- === BOOT AUTOSTART ===
+local function writeBoot()
+  local launcherPath = INSTALL_DIR .. "/launcher.lua"
+  local bootContent = ([[-- Auto-start GTNH Machine Monitor
+local fs = require("filesystem")
+local shell = require("shell")
+if fs.exists(%q) then
+  shell.execute(%q)
+end]]):format(launcherPath, launcherPath)
+  local f, e = io.open(BOOT_FILE, "w")
+  if not f then error("Failed to write boot file: "..tostring(e)) end
+  f:write(bootContent); f:close()
+end
+
+-- === MAIN FLOW ===
+local totalSteps = 7
+local step = 0
+
+local function nextStep(msg) step = step + 1; progress(step, totalSteps, msg) end
+
+local function main()
+  term.clear()
+  -- Ensure reasonable resolution
+  local setW, setH = 80, 25
+  local curW, curH = gpu.getResolution()
+  if curW < setW or curH < setH then pcall(function() gpu.setResolution(setW, setH) end) end
+
+  -- 0. If already installed, ask reinstall
+  setColor(0xFFFFFF)
+  if fs.exists(INSTALL_DIR) then
+    statusLine(4, "Already installed at "..INSTALL_DIR..". Reinstall? [Y/N]", 0xFFFF00)
+    local ev = waitKeyOrTouch()
+    if ev[1] == "key_down" then
+      local _, _, _, code, _, ch = table.unpack(ev)
+      if not (ch == 89 or ch == 121) then error("Installation aborted.") end
+    elseif ev[1] == "touch" then
+      -- Accept any touch as Yes for simplicity
+    end
+    -- wipe previous
+    for f in fs.list(INSTALL_DIR) do fs.remove(fs.concat(INSTALL_DIR, f)) end
+    fs.remove(INSTALL_DIR)
   end
 
-  if keyboard.isControlDown() then
-    if code == keyboard.keys.s then       -- Ctrl+S
-      saveFiles()
-      hint = "Files saved."
-    elseif code == keyboard.keys.r then   -- Ctrl+R
-      reloadFromAdapters()
-      hint = "Mapping reloaded."
-    elseif code == keyboard.keys.w then
-      term.clear()
-      os.exit()
+  ensureTmp()
+
+  -- 1. Fetch releases
+  nextStep("Fetching releases from GitHub...")
+  local releasesJSON = fetch("https://api.github.com/repos/"..REPO.."/releases", false)
+  local releases = json.parse(releasesJSON)
+  if not releases or #releases == 0 then error("No releases found for "..REPO) end
+
+  -- 2. Pick release (touch UI)
+  nextStep("Choose a version…")
+  local release = pickRelease(releases)  -- throws on cancel
+  local tag = release.tag_name or "<unknown>"
+
+  -- 3. Decide extractor and asset URL (prefer tarball)
+  nextStep("Preparing download…")
+  local useTar = hasCmdFile("tar")
+  local downloadUrl = nil
+  local savePath = nil
+  if useTar and release.tarball_url then
+    downloadUrl = release.tarball_url
+    savePath = TAR_PATH
+  elseif release.zipball_url then
+    downloadUrl = release.zipball_url
+    savePath = ZIP_PATH
+  else
+    error("Release has neither tarball_url nor zipball_url.")
+  end
+
+  -- 4. Download
+  nextStep("Downloading "..tag.." …")
+  local data = fetch(downloadUrl, true)  -- binary
+  fileWrite(savePath, data, "wb")
+
+  -- 5. Extract
+  nextStep("Extracting files…")
+  fs.makeDirectory(INSTALL_DIR)
+  local ok, err
+  if savePath == TAR_PATH then
+    ok, err = extractTarGz(TAR_PATH, INSTALL_DIR)
+    if not ok then
+      -- try zip fallback
+      if release.zipball_url and hasCmdFile("unzip") then
+        local zipData = fetch(release.zipball_url, true)
+        fileWrite(ZIP_PATH, zipData, "wb")
+        ok, err = extractZip(ZIP_PATH, INSTALL_DIR)
+      end
     end
   else
-    if code == keyboard.keys.up then
-      selected = selected - 1
-      if selected == 0 then
-        selected = #mapping + #config
+    ok, err = extractZip(ZIP_PATH, INSTALL_DIR)
+  end
+  if not ok then error("Extraction failed: "..tostring(err)) end
+
+  -- NOTE: GitHub tarball/zip creates a top-level dir like: repo-<hash>/
+  -- Move contents up if needed (first directory inside INSTALL_DIR)
+  do
+    local first = nil
+    for name in fs.list(INSTALL_DIR) do first = name; break end
+    if first and fs.isDirectory(fs.concat(INSTALL_DIR, first)) then
+      local inner = fs.concat(INSTALL_DIR, first)
+      for name in fs.list(inner) do
+        fs.rename(fs.concat(inner, name), fs.concat(INSTALL_DIR, name))
       end
-    elseif code == keyboard.keys.down then
-      selected = selected + 1
-      if selected > #mapping + #config then
-        selected = 1
-      end
-    elseif code == 14 then
-      local value = getTempValue()
-      if value ~= nil and #value > 0 then
-        if #value == 1 then
-          setTempValue(nil)
-        else
-          setTempValue(value:sub(1, #value - 1))
-        end
-      end
-    elseif char and char >= 32 and char <= 126 then
-      setTempValue((getTempValue() or "") .. string.char(char))
+      fs.remove(inner)
     end
   end
-end
 
-local function handleEvent(eventType, ...)
-  local arg = {...}
+  -- 6. Write boot autostart
+  nextStep("Configuring autostart…")
+  writeBoot()
 
-  if eventType == "key_down" then
-    onKeyDown(arg[2], arg[3])
+  -- 7. Done
+  nextStep("Cleaning up…")
+  cleanupTmp()
+
+  term.clear()
+  setColor(0x00FF00); centerText(3, "Installation complete!"); setColor(0xFFFFFF)
+  centerText(5, "Installed: "..INSTALL_DIR)
+  centerText(7, "Auto-start configured via "..BOOT_FILE)
+  centerText(9, "Press Enter to launch now, or any other key to exit.")
+  local ev = { event.pull() }
+  if ev[1] == "key_down" and select(4, table.unpack(ev)) == 28 then
+    shell.execute(INSTALL_DIR.."/launcher.lua")
   end
-  drawUI()
 end
 
--- === Main ===
-loadFiles()
-drawUI()
-while true do
-  handleEvent(event.pull())
+-- Run with robust cleanup
+local ok, err = pcall(main)
+cleanupTmp()
+if not ok then
+  term.clear()
+  setColor(0xFF5555); centerText(3, "Installation failed"); setColor(0xFFFFFF)
+  centerText(5, tostring(err))
+  centerText(7, "(Temp files cleaned up)")
 end
-
-  ]],
-}
-
--- === INSTALLER ===
-term.clear()
-print("== Installing GTNH Machine Monitor ==")
-
-for name, code in pairs(scripts) do
-  local path = "/home/" .. name .. ".lua"
-  local f = io.open(path, "w")
-  f:write(code)
-  f:close()
-  print("Installed: " .. path)
-end
-
-print("\nInstallation complete!")
-
-os.execute("/home/launcher.lua")
