@@ -6,9 +6,9 @@ local gpu   = component.gpu
 
 -- Config
 local base_path         = "/home/gtnh_monitor/"
-local mapping_file      = base_path + "f_machine_mapping.lua"
-local editor_script     = base_path + "mapping_editor.lua"
-local display_script    = base_path + "machine_display.lua"
+local mapping_file      = base_path .. "f_machine_mapping.lua"
+local editor_script     = base_path .. "mapping_editor.lua"
+local display_script    = base_path .. "machine_display.lua"
 
 -- Vars
 local screenW, screenH = gpu.getResolution()
