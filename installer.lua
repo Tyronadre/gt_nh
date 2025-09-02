@@ -35,18 +35,48 @@ local json = {}
 function json.parse(str)
   local pos = 1
   local function ws() local _,e = str:find("^[ \n\r\t]*",pos); pos=(e or pos-1)+1 end
-  local function val()    
-    ws() local c = str:sub(pos,pos)    
-    if c == '"' then local i, res = pos+1, "" while i <= #str do local ch = str:sub(i,i) if ch == '"' then pos = i+1; return res        elseif ch == "\\" then          local n = str:sub(i+1,i+1); res = res .. (n == '"' or n == "\\" and n or ch); i = i + (n and 2 or 1)else res = res .. ch; i = i + 1 endend
+  local function val()
+    ws()
+    local c = str:sub(pos,pos)
+    if c == '"' then
+      local i, res = pos+1, ""
+      while i <= #str do
+        local ch = str:sub(i,i)
+        if ch == '"' then pos = i+1; return res
+        elseif ch == "\\" then
+          local n = str:sub(i+1,i+1); res = res .. (n == '"' or n == "\\" and n or ch); i = i + (n and 2 or 1)
+        else res = res .. ch; i = i + 1 end
+      end
     elseif c:match("[%d%-]") then
       local s,e = str:find("^-?%d+%.?%d*[eE]?[+-]?%d*",pos)
       local n = tonumber(str:sub(s,e)); pos = e+1; return n
     elseif str:sub(pos,pos+3) == "null"  then pos=pos+4; return nil
     elseif str:sub(pos,pos+3) == "true"  then pos=pos+4; return true
     elseif str:sub(pos,pos+4) == "false" then pos=pos+5; return false
-    elseif c == "{" then      pos = pos+1; ws(); local t = {}      if str:sub(pos,pos) == "}" then pos = pos+1; return t end      while true do        ws(); local k = val(); ws(); pos = pos+1        local v = val(); t[k] = v; ws()        local ch = str:sub(pos,pos)        if ch == "}" then pos = pos+1; break end os = pos+1      end      return t
-    elseif c == "[" then      pos = pos+1; ws(); local a = {}      if str:sub(pos,pos) == "]" then pos = pos+1; return a end      while true do        local v = val(); a[#a+1] = v; ws()        local ch = str:sub(pos,pos)        if ch == "]" then pos = pos+1; break end        pos = pos+1       end      return a
-    else      error("JSON parse error at pos "..pos.." (char '"..(c or "?").."')")    end
+    elseif c == "{" then
+      pos = pos+1; ws(); local t = {}
+      if str:sub(pos,pos) == "}" then pos = pos+1; return t end
+      while true do
+        ws(); local k = val(); ws(); pos = pos+1 -- :
+        local v = val(); t[k] = v; ws()
+        local ch = str:sub(pos,pos)
+        if ch == "}" then pos = pos+1; break end
+        pos = pos+1 -- ,
+      end
+      return t
+    elseif c == "[" then
+      pos = pos+1; ws(); local a = {}
+      if str:sub(pos,pos) == "]" then pos = pos+1; return a end
+      while true do
+        local v = val(); a[#a+1] = v; ws()
+        local ch = str:sub(pos,pos)
+        if ch == "]" then pos = pos+1; break end
+        pos = pos+1 -- ,
+      end
+      return a
+    else
+      error("JSON parse error at pos "..pos.." (char '"..(c or "?").."')")
+    end
   end
   return val()
 end
@@ -54,6 +84,7 @@ end
 -- === UTIL ===
 local function ensureTmp()
   if fs.exists(TMP_DIR) then
+    -- clean previous
     for file in fs.list(TMP_DIR) do fs.remove(fs.concat(TMP_DIR, file)) end
   else
     fs.makeDirectory(TMP_DIR)
@@ -255,17 +286,14 @@ local function main()
   local downloadUrl = nil
   local savePath = nil
   if useTar and release.tarball_url then
-    nextStep("Using tar")
     downloadUrl = release.tarball_url
     savePath = TAR_PATH
   elseif release.zipball_url then
-    nextStep("Using zip")
     downloadUrl = release.zipball_url
     savePath = ZIP_PATH
   else
     error("Release has neither tarball_url nor zipball_url.")
   end
-  os.sleep(1000)
 
   -- 4. Download
   nextStep("Downloading "..tag.." …")
