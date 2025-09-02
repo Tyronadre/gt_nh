@@ -286,19 +286,7 @@ local function main()
   nextStep("Extracting files…")
   fs.makeDirectory(INSTALL_DIR)
   local ok, err
-  if savePath == TAR_PATH then
-    ok, err = extractTarGz(TAR_PATH, INSTALL_DIR)
-    if not ok then
-      -- try zip fallback
-      if release.zipball_url and hasCmdFile("unzip") then
-        local zipData = fetch(release.zipball_url, true)
-        fileWrite(ZIP_PATH, zipData, "wb")
-        ok, err = extractZip(ZIP_PATH, INSTALL_DIR)
-      end
-    end
-  else
-    ok, err = extractZip(ZIP_PATH, INSTALL_DIR)
-  end
+  ok, err = extractTarGz(TAR_PATH, INSTALL_DIR)
   if not ok then error("Extraction failed: "..tostring(err)) end
 
   -- NOTE: GitHub tarball/zip creates a top-level dir like: repo-<hash>/
