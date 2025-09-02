@@ -24,7 +24,7 @@ end
 local jsonLib = "https://raw.githubusercontent.com/rxi/json.lua/refs/heads/master/json.lua"
 
 -- === CONFIG ===
-local VERSION           = "1.0.1"
+local VERSION           = "1.1"
 local REPO              = "Tyronadre/gt_nh"         -- owner/repo
 local INSTALL_DIR       = "/home/gtnh_monitor"
 local BOOT_FILE         = "/home/.shrc"             -- autostart via shell rc
