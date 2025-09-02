@@ -5,9 +5,10 @@ local component = require("component")
 local gpu   = component.gpu
 
 -- Config
-local mapping_file      = "/home/f_machine_mapping.lua"
-local editor_script     = "/home/mapping_editor.lua"
-local display_script    = "/home/machine_display.lua"
+local base_path         = "/home/gtnh_monitor/"
+local mapping_file      = base_path + "f_machine_mapping.lua"
+local editor_script     = base_path + "mapping_editor.lua"
+local display_script    = base_path + "machine_display.lua"
 
 -- Vars
 local screenW, screenH = gpu.getResolution()
