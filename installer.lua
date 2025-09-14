@@ -208,7 +208,7 @@ end
 local function writeBoot()
   local f, e = io.open(BOOT_FILE, "w")
   if not f then error("Failed to write boot file: "..tostring(e)) end
-  f:write(INSTALL_DIR .. "/launcher.lua"); f:close()
+  f:write(INSTALL_DIR .. "/machine_display.lua"); f:close()
 end
 
 -- === MAIN ===
