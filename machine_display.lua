@@ -207,9 +207,9 @@ local function drawUI()
   local barWidth = math.max(10, columnWidth - 2)
 
   for i, m in ipairs(adapters) do
-    local active = m.isMachineActive
-    local cur = m.getWorkProgress
-    local mx = m.getWorkMaxProgress
+    local active = m.isMachineActive()
+    local cur = m.getWorkProgress()
+    local mx = m.getWorkMaxProgress()
 
     local row = ((i - 1) % rowsPerColumn)
     local column = math.floor((i - 1) / rowsPerColumn)
