@@ -35,10 +35,18 @@ local function drawProgressBar(x, y, width, active, current, max)
   local empty   = width - 5 - fill
   local bar     = string.rep("█", fill) .. string.rep("░", empty)
 
+  local etaText = string.format("%4.1fs", eta)
+
+  local usableWidth =      math.max(1, width - #etaText - 1)
+  local fill = math.floor(usableWidth * percent / 100)
+  local empty = usableWidth - fill
+  local bar = string.rep("█", fill) .. string.rep("░", empty)
+
   gpu.setForeground(active and 0x00FF00 or 0xAAAAAA)
   gpu.set(x, y, bar)
+
   gpu.setForeground(0xFFFFFF)
-  gpu.set(x + width - 5, y, string.format(" %.1fs", eta))
+  gpu.set(x + usableWidth + 1, y, etaText)
 end
 
 local function sortByCoords()
@@ -197,8 +205,11 @@ local function drawUI()
   gpu.fill(1,1,screenW,screenH," ")
   local titleLine = string.format("== %s ==", config.title)
   gpu.set((screenW / 2) - (#titleLine / 2),1,titleLine)
-  local leftLine, rightLine = startLine, startLine
-  local rowsPerColumn     = math.floor((screenH-startLine)/linesPerMachine)
+
+  local rowsPerColumn = math.max(1, math.floor((screenH - startLine) / linesPerMachine))
+  local columnCount = math.max(1,math.ceil(#adapters / rowsPerColumn))
+  local columnWidth = math.floor(screenW / columnCount)
+  local barWidth = math.max(10, columnWidth - 2)
 
   for i, m in ipairs(adapters) do
     local ok, active = pcall(m.isMachineActive)
@@ -215,8 +226,7 @@ local function drawUI()
     local x = 1 + column * columnWidth
     local y = startLine + row * linesPerMachine
 
-    gpu.set(x, y,
-        string.format("== %s ==", m.name))
+    gpu.set(x, y, string.sub(m.name,1,columnWidth-1))
 
     drawProgressBar(
         x,
