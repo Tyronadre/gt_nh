@@ -168,7 +168,10 @@ local function wrapMachines()
             local ok1, result = pcall(function()
               return proxy.isMachineActive and proxy.isMachineActive()
             end)
-            return ok1 and result or false
+            if (ok1) then 
+              return result
+            end
+            return false
           end,
 
           getWorkProgress = function()
