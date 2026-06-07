@@ -166,9 +166,9 @@ local function wrapMachines()
 
           isMachineActive = function()
             local ok1, result = pcall(function()
-              return proxy.isMachineActive and proxy.isMachineActive()
+              return proxy.isMachineActive()
             end)
-            if (ok1) then 
+            if (ok1) then
               return result
             end
             return false
@@ -176,14 +176,14 @@ local function wrapMachines()
 
           getWorkProgress = function()
             local ok1, result = pcall(function()
-              return proxy.getWorkProgress and proxy.getWorkProgress()
+              return proxy.getWorkProgress()
             end)
             return ok1 and result or 0
           end,
 
           getWorkMaxProgress = function()
             local ok1, result = pcall(function()
-              return proxy.getWorkMaxProgress and proxy.getWorkMaxProgress()
+              return proxy.getWorkMaxProgress()
             end)
             return ok1 and result or 0
           end
