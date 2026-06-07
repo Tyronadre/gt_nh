@@ -12,12 +12,9 @@ local base_path     = "/home/gtnh_monitor/"
 local mapping_file  = base_path .. "f_machine_mapping.lua"
 local config_file   = base_path .. "f_config.lua"
 local config        = {}
-local updateInterval= 0.2
-local barWidth      = 35
-local columnWidth   = barWidth + 2
 local startLine     = 3
 local linesPerMachine = 3
---gpu.setResolution(80, 25)
+gpu.setResolution(80, 25)
 local screenW, screenH = gpu.getResolution()
 
 -- === VARIABLES ===
@@ -31,13 +28,8 @@ local function drawProgressBar(x, y, width, active, current, max)
 
   local percent = (max > 0) and (current / max * 100) or 0
   local eta = math.max(0, (max - current) / 20)
-  local fill    = math.floor((width - 5) * percent / 100)
-  local empty   = width - 5 - fill
-  local bar     = string.rep("█", fill) .. string.rep("░", empty)
-
   local etaText = string.format("%4.1fs", eta)
-
-  local usableWidth =      math.max(1, width - #etaText - 1)
+  local usableWidth = math.max(1, width - #etaText - 1)
   local fill = math.floor(usableWidth * percent / 100)
   local empty = usableWidth - fill
   local bar = string.rep("█", fill) .. string.rep("░", empty)
@@ -173,24 +165,24 @@ local function wrapMachines()
           coords = entry.coords or {x=0,y=0,z=0},
 
           isMachineActive = function()
-            local ok, result = pcall(function()
+            local ok1, result = pcall(function()
               return proxy.isMachineActive and proxy.isMachineActive()
             end)
-            return ok and result or false
+            return ok1 and result or false
           end,
 
           getWorkProgress = function()
-            local ok, result = pcall(function()
+            local ok1, result = pcall(function()
               return proxy.getWorkProgress and proxy.getWorkProgress()
             end)
-            return ok and result or 0
+            return ok1 and result or 0
           end,
 
           getWorkMaxProgress = function()
-            local ok, result = pcall(function()
+            local ok1, result = pcall(function()
               return proxy.getWorkMaxProgress and proxy.getWorkMaxProgress()
             end)
-            return ok and result or 0
+            return ok1 and result or 0
           end
         })
       end
@@ -212,14 +204,9 @@ local function drawUI()
   local barWidth = math.max(10, columnWidth - 2)
 
   for i, m in ipairs(adapters) do
-    local ok, active = pcall(m.isMachineActive)
-    active = ok and active or false
-
-    local ok, cur = pcall(m.getWorkProgress)
-    cur = ok and cur or 0
-
-    local ok, mx = pcall(m.getWorkMaxProgress)
-    mx = ok and mx or 0
+    local active = m.isMachineActive
+    local cur = m.getWorkProgress
+    local mx = m.getWorkMaxProgress
 
     local row = ((i - 1) % rowsPerColumn)
     local column = math.floor((i - 1) / rowsPerColumn)
