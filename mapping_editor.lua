@@ -148,6 +148,25 @@ local function saveFiles()
   f2:close()
 end
 
+local function deleteSelectedMapping()
+  if selected > #config then
+    local mappingIndex = selected - #config
+
+    table.remove(mapping, mappingIndex)
+
+    local maxSelection = #config + #mapping
+    if selected > maxSelection then
+      selected = maxSelection
+    end
+
+    if selected < 1 then
+      selected = 1
+    end
+
+    hint = "Entry removed. Press Ctrl+S to save."
+  end
+end
+
 -- === Drawing ===
 
 local function drawId(y, idText, isSelected)
@@ -224,6 +243,8 @@ local function onKeyDown(char, code)
     elseif code == keyboard.keys.back then
       local v = getTempValue() or ""
       setTempValue(#v>0 and v:sub(1,#v-1) or nil)
+    elseif code == keyboard.keys.delete then
+      deleteSelectedMapping()
     elseif char and char>=32 and char<=126 then
       setTempValue((getTempValue() or "")..string.char(char))
     end
