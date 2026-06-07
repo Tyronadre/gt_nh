@@ -92,6 +92,10 @@ local function getConfigValue(config, key)
   end
 end
 
+local function componentExists(address)
+  return component.get(address) ~= nil
+end
+
 -- === LOADING ===
 
 local function loadMapping()
@@ -147,22 +151,44 @@ end
 -- === WRAP MACHINES ===
 local function wrapMachines()
   adapters = {}
-  for address, _  in pairs(component.list(config.adapter_type)) do
-    print(address)
-    local ok, proxy = pcall(component.proxy, address)
 
-    if ok and proxy then
-      table.insert(adapters, {
-        name = getName(address),
-        coords = getCoords(address),
-        isMachineActive = function()
-          return proxy.isMachineActive and proxy.isMachineActive() or false
-        end,
-        getWorkProgress   = proxy.getWorkProgress   and function() return proxy.getWorkProgress()   end,
-        getWorkMaxProgress= proxy.getWorkMaxProgress and function() return proxy.getWorkMaxProgress() end
-      })
+  for _, entry in ipairs(mapping) do
+    local address = entry.address
+
+    if address and componentExists(address) then
+      local ok, proxy = pcall(component.proxy, address)
+
+      if ok and proxy then
+        table.insert(adapters, {
+          address = address,
+          name = entry.name or "Unknown",
+          coords = entry.coords or {x=0,y=0,z=0},
+
+          isMachineActive = function()
+            local ok, result = pcall(function()
+              return proxy.isMachineActive and proxy.isMachineActive()
+            end)
+            return ok and result or false
+          end,
+
+          getWorkProgress = function()
+            local ok, result = pcall(function()
+              return proxy.getWorkProgress and proxy.getWorkProgress()
+            end)
+            return ok and result or 0
+          end,
+
+          getWorkMaxProgress = function()
+            local ok, result = pcall(function()
+              return proxy.getWorkMaxProgress and proxy.getWorkMaxProgress()
+            end)
+            return ok and result or 0
+          end
+        })
+      end
     end
   end
+
   sortByCoords()
 end
 
@@ -184,15 +210,22 @@ local function drawUI()
     local ok, mx = pcall(m.getWorkMaxProgress)
     mx = ok and mx or 0
 
-    local isLeft = i <= rowsPerColumn
-    local x      = isLeft and 1 or (screenW - columnWidth +1)
-    local y      = isLeft and leftLine or rightLine
+    local row = ((i - 1) % rowsPerColumn)
+    local column = math.floor((i - 1) / rowsPerColumn)
+    local x = 1 + column * columnWidth
+    local y = startLine + row * linesPerMachine
 
-    gpu.set(x, y, string.format("== %s ==", m.name))
-    drawProgressBar(x, y+1, barWidth, active, cur, mx)
+    gpu.set(x, y,
+        string.format("== %s ==", m.name))
 
-    if isLeft then leftLine  = leftLine  + linesPerMachine
-    else          rightLine = rightLine + linesPerMachine end
+    drawProgressBar(
+        x,
+        y + 1,
+        barWidth,
+        active,
+        cur,
+        mx
+    )
   end
 end
 
