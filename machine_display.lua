@@ -26,8 +26,11 @@ local adapters   = {}
 
 -- === HELPERS ===
 local function drawProgressBar(x, y, width, active, current, max)
+  current = tonumber(current) or 0
+  max     = tonumber(max) or 0
+
   local percent = (max > 0) and (current / max * 100) or 0
-  local eta     = (max - current) / 20
+  local eta = math.max(0, (max - current) / 20)
   local fill    = math.floor((width - 5) * percent / 100)
   local empty   = width - 5 - fill
   local bar     = string.rep("█", fill) .. string.rep("░", empty)
@@ -39,10 +42,25 @@ local function drawProgressBar(x, y, width, active, current, max)
 end
 
 local function sortByCoords()
-  table.sort(adapters, function(a,b)
-    if a.coords.x ~= b.coords.x then return a.coords.x < b.coords.x
-    elseif a.coords.y ~= b.coords.y then return a.coords.y < b.coords.y
-    else return a.coords.z < b.coords.z end
+  table.sort(adapters, function(a, b)
+    local ac = a.coords or {}
+    local bc = b.coords or {}
+
+    local ax = tonumber(ac.x) or 0
+    local ay = tonumber(ac.y) or 0
+    local az = tonumber(ac.z) or 0
+
+    local bx = tonumber(bc.x) or 0
+    local by = tonumber(bc.y) or 0
+    local bz = tonumber(bc.z) or 0
+
+    if ax ~= bx then
+      return ax < bx
+    elseif ay ~= by then
+      return ay < by
+    else
+      return az < bz
+    end
   end)
 end
 
@@ -52,14 +70,18 @@ local function getName(address)
       return entry.name or "Unknown"
     end
   end
+
+  return "Unknown"
 end
 
 local function getCoords(address)
   for _, entry in ipairs(mapping) do
     if entry.address == address then
-      return entry.coords or 0,0,0
+      return entry.coords or {x = 0, y = 0, z = 0}
     end
   end
+
+  return {x = 0, y = 0, z = 0}
 end
 
 local function getConfigValue(config, key)
@@ -79,6 +101,20 @@ local function loadMapping()
   local f = io.open(mapping_file, "r")
   local content = f:read("*a"); f:close()
   mapping = load("return "..content)()
+  local fn, err = load("return " .. content)
+
+  if not fn then
+    print("Mapping parse error: " .. tostring(err))
+    return
+  end
+
+  local ok
+  ok, mapping = pcall(fn)
+
+  if not ok or type(mapping) ~= "table" then
+    print("Invalid config file")
+    return
+  end
   sortByCoords()
 end
 
@@ -89,7 +125,19 @@ local function loadConfig()
   end
   local f = io.open(config_file, "r")
   local content = f:read("*a"); f:close()
-  local loaded_config = load("return "..content)()
+  local fn, err = load("return " .. content)
+
+  if not fn then
+    print("Config parse error: " .. tostring(err))
+    return
+  end
+
+  local ok, loaded_config = pcall(fn)
+
+  if not ok or type(loaded_config) ~= "table" then
+    print("Invalid config file")
+    return
+  end
 
   config.title = getConfigValue(loaded_config, "title")
   config.update_interval = tonumber(getConfigValue(loaded_config, "update_interval"))
@@ -101,16 +149,19 @@ local function wrapMachines()
   adapters = {}
   for address, _  in pairs(component.list(config.adapter_type)) do
     print(address)
-    local proxy = component.proxy(address)
-    table.insert(adapters, {
-      name = getName(address),
-      coords = getCoords(address),
-      isMachineActive = function()
-        return proxy.isMachineActive and proxy.isMachineActive() or false
-      end,
-      getWorkProgress   = proxy.getWorkProgress   and function() return proxy.getWorkProgress()   end,
-      getWorkMaxProgress= proxy.getWorkMaxProgress and function() return proxy.getWorkMaxProgress() end
-    })
+    local ok, proxy = pcall(component.proxy, address)
+
+    if ok and proxy then
+      table.insert(adapters, {
+        name = getName(address),
+        coords = getCoords(address),
+        isMachineActive = function()
+          return proxy.isMachineActive and proxy.isMachineActive() or false
+        end,
+        getWorkProgress   = proxy.getWorkProgress   and function() return proxy.getWorkProgress()   end,
+        getWorkMaxProgress= proxy.getWorkMaxProgress and function() return proxy.getWorkMaxProgress() end
+      })
+    end
   end
   sortByCoords()
 end
@@ -124,9 +175,15 @@ local function drawUI()
   local rowsPerColumn     = math.floor((screenH-startLine)/linesPerMachine)
 
   for i, m in ipairs(adapters) do
-    local active = m.isMachineActive()
-    local cur    = m.getWorkProgress()
-    local mx     = m.getWorkMaxProgress()
+    local ok, active = pcall(m.isMachineActive)
+    active = ok and active or false
+
+    local ok, cur = pcall(m.getWorkProgress)
+    cur = ok and cur or 0
+
+    local ok, mx = pcall(m.getWorkMaxProgress)
+    mx = ok and mx or 0
+
     local isLeft = i <= rowsPerColumn
     local x      = isLeft and 1 or (screenW - columnWidth +1)
     local y      = isLeft and leftLine or rightLine
