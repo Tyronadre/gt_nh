@@ -42,6 +42,11 @@ targets.CELL_CAPACITIES = {
 --------------------------------------------------------------------------------
 -- ITEMS TO KEEP IN STOCK
 --
+-- Set this to true to automatically enable every mineable item registered in
+-- config.dustTargets. Entries in targets.items below still take precedence, so
+-- they can override a target or exclude an item with false.
+targets.keepAllMinedItems = false
+
 -- Supported forms:
 --   ["Diamond"] = true,                 -- use the default cell target
 --   ["Diamond"] = "50m",                -- absolute target, short form

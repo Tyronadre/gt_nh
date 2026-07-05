@@ -825,11 +825,27 @@ end
 local targetSettings = loadTargetConfig()
 assert(type(targetSettings.items) == "table",
        "target_config.lua must contain an items table")
+assert(targetSettings.keepAllMinedItems == nil or
+       type(targetSettings.keepAllMinedItems) == "boolean",
+       "keepAllMinedItems in target_config.lua must be true or false")
 
 config.targetSettings = targetSettings
 config.conditions = {}
 
+-- Start with every known target when requested, then apply the explicit item
+-- map as an override layer. A false value therefore excludes an item even in
+-- keep-all mode.
+local configuredItems = {}
+if targetSettings.keepAllMinedItems then
+  for itemName in pairs(config.dustTargets) do
+    configuredItems[itemName] = true
+  end
+end
 for itemName, itemSettings in pairs(targetSettings.items) do
+  configuredItems[itemName] = itemSettings
+end
+
+for itemName, itemSettings in pairs(configuredItems) do
   assert(type(itemName) == "string", "Every target item name must be a string")
   local registryEntry = config.dustTargets[itemName]
   assert(registryEntry, "Unknown target item '" .. itemName ..

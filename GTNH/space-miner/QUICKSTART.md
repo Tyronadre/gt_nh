@@ -114,6 +114,7 @@ targets.currentCellType = "16384k"
 targets.cellCount = 1
 targets.safetyMargin = 0.20
 targets.maxTargetOverride = 0
+targets.keepAllMinedItems = false
 ```
 
 With these settings, every default item target is 80% of one `16384k` cell:
@@ -135,6 +136,9 @@ targets.items = {
   with a Rarity-mode priority.
 - Cell capacities assume one item type per cell. Use lower targets if multiple
   item types share the same physical cell.
+- Set `keepAllMinedItems = true` to enable all items from `config.dustTargets`.
+  The `items` table remains an override list, so `["Coal Dust"] = false` excludes
+  one item even in keep-all mode.
 
 MEDINA already knows which asteroid produces each common dust, which drones can
 mine it, and the best distance to use (in the `dustTargets`, asteroid, and

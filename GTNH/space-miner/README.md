@@ -96,6 +96,7 @@ targets.currentCellType = "16384k"
 targets.cellCount = 1
 targets.safetyMargin = 0.20
 targets.maxTargetOverride = 0
+targets.keepAllMinedItems = false
 
 targets.items = {
   ["Cosmic Neutronium Dust"] = true,  -- use the default cell target
@@ -109,6 +110,13 @@ The formula is `cell capacity × cell count × (1 − safety margin)`. One
 items. Cell capacities assume one item type per cell; lower targets when
 multiple types share the same physical cell. A table entry can also set
 `priority`, where a lower number wins in Rarity mode.
+
+Set `targets.keepAllMinedItems = true` to automatically stock all items known
+to `config.dustTargets` (currently 104). The `targets.items` table then acts as
+an override list: use `false` to exclude an item or a quantity/table to give it
+a different target. Keep-all mode assumes those exact item labels reach the
+dust-storage network; otherwise an unseen item remains at 0% and keeps
+triggering mining.
 
 Keep the same `target_config.lua` on the broker and dust node and restart both
 after changing it. The installer preserves an existing copy during updates.
