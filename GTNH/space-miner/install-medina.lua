@@ -17,7 +17,8 @@
 --   3) Hardware node — monitors drones/drill kits    (required telem)
 --   4) Fluid node    — monitors plasma               (required telem)
 --   5) Remote job node (optional, multi-node fleets)
---   6) Everything    — grab every file (e.g. one shared drive / testing)
+--   6) Target editor  — responsive remote target UI
+--   7) Everything    — grab every file (e.g. one shared drive / testing)
 -- =============================================================================
 
 local component = require("component")
@@ -60,6 +61,11 @@ local ROLES = {
     files = { "job_node.lua", "list_components.lua", "detect_module.lua" },
     config = { ["job_node_config.example.lua"] = "job_node_config.lua" },
     note = "Edit /home/job_node_config.lua (give it a unique nodeId), then run: job_node",
+  },
+  ["editor"] = {
+    label = "Remote target editor",
+    files = { "target_editor.lua", "target_editor_app.lua" },
+    note = "Keep the broker running, then run: target_editor_app",
   },
 }
 
@@ -147,18 +153,23 @@ print("  2) Dust node     (required monitor)")
 print("  3) Hardware node (required monitor)")
 print("  4) Fluid node    (required monitor)")
 print("  5) Remote job node (optional)")
-print("  6) Everything    (all files)")
-io.write("Choice [1-6]: ")
+print("  6) Target editor (separate responsive UI)")
+print("  7) Everything    (all files)")
+io.write("Choice [1-7]: ")
 
 local choice = tonumber(io.read())
-local map = { [1]="broker", [2]="dust", [3]="hw", [4]="fluid", [5]="jobnode" }
+local map = {
+  [1]="broker", [2]="dust", [3]="hw", [4]="fluid",
+  [5]="jobnode", [6]="editor",
+}
 
-if choice == 6 then
+if choice == 7 then
   -- Grab the whole shipped set into /home/ (user configuration is preserved).
   print("\nInstalling EVERYTHING from " .. RAW .. "\n")
   local everything = {
     "config.lua", "broker-mk3.lua", "scheduler.lua", "loader.lua", "logger.lua",
-    "target_editor.lua", "list_components.lua", "detect_module.lua",
+    "target_editor.lua", "target_editor_app.lua",
+    "list_components.lua", "detect_module.lua",
     "dust_telem.lua", "hw_telem.lua", "fluid_telem.lua", "job_node.lua",
   }
   local allOk = true
@@ -173,5 +184,5 @@ if choice == 6 then
 elseif map[choice] then
   installRole(map[choice])
 else
-  print("No valid choice made. Re-run 'install' and pick 1-6.")
+  print("No valid choice made. Re-run 'install' and pick 1-7.")
 end

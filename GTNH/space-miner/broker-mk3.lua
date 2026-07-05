@@ -28,7 +28,6 @@ local event     = require("event")
 local term      = require("term")
 local fs        = require("filesystem")
 local computer  = require("computer")
-local keyboard  = require("keyboard")
 
 local config = dofile("/home/config.lua")
 local sched  = dofile("/home/scheduler.lua")
@@ -58,7 +57,9 @@ if not modem.isWireless or not modem.isWireless() then
 end
 modem.setStrength(400)
 modem.open(config.ports.telemetry)
+modem.open(config.ports.command)
 logger:info("Modem listening on port " .. config.ports.telemetry)
+logger:info("Target editor listening on port " .. config.ports.command)
 
 local gpu = component.isAvailable("gpu") and component.gpu or nil
 
@@ -155,17 +156,6 @@ local function applyRuntimeTargets(targetSettings)
   logger:info("[TARGETS] Runtime target configuration updated; " ..
               #config.conditions .. " active items")
 end
-
-local targetEditor = gpu and targetEditorModule.create({
-  gpu = gpu,
-  term = term,
-  keyboard = keyboard,
-  computer = computer,
-  config = config,
-  path = config.targetConfigPath or "/home/target_config.lua",
-  validate = config.buildTargetConditions,
-  apply = applyRuntimeTargets,
-}) or nil
 
 -- =============================================================================
 -- MODULE LIFECYCLE
@@ -495,10 +485,56 @@ end
 -- TELEMETRY
 -- =============================================================================
 
-local function processMessage(evType, _, _, _, _, rawMsg)
+local function sendTargetEditorReply(address, requestId, success, message, settings)
+  modem.send(address, config.ports.command, serial.serialize({
+    protocol = "MEDINA_TARGET_EDITOR",
+    payloadType = "TARGET_CONFIG_RESULT",
+    requestId = requestId,
+    success = success,
+    message = message,
+    settings = settings,
+  }))
+end
+
+local function processMessage(evType, _, remoteAddress, port, _, rawMsg)
   if evType ~= "modem_message" then return end
   local ok, msg = pcall(serial.unserialize, rawMsg)
   if not ok or type(msg) ~= "table" then return end
+
+  if msg.protocol == "MEDINA_TARGET_EDITOR" and port == config.ports.command then
+    if msg.payloadType == "TARGET_CONFIG_REQUEST" then
+      sendTargetEditorReply(remoteAddress, msg.requestId, true,
+                            "Current broker targets", config.targetSettings)
+    elseif msg.payloadType == "TARGET_CONFIG_APPLY" then
+      local valid, validationError = pcall(config.buildTargetConditions, msg.settings)
+      if not valid then
+        sendTargetEditorReply(remoteAddress, msg.requestId, false,
+                              "Validation failed: " .. tostring(validationError))
+        return
+      end
+
+      local saved, saveError = targetEditorModule.writeSettings(
+        config.targetConfigPath or "/home/target_config.lua", msg.settings)
+      if not saved then
+        sendTargetEditorReply(remoteAddress, msg.requestId, false,
+                              "Save failed: " .. tostring(saveError))
+        return
+      end
+
+      local applied, applyError = pcall(applyRuntimeTargets, msg.settings)
+      if not applied then
+        sendTargetEditorReply(remoteAddress, msg.requestId, false,
+                              "Runtime apply failed: " .. tostring(applyError))
+        return
+      end
+
+      sendTargetEditorReply(remoteAddress, msg.requestId, true,
+                            #config.conditions .. " targets saved and applied",
+                            config.targetSettings)
+    end
+    return
+  end
+
   if msg.protocol ~= "MEDINA_TELEMETRY" or not msg.data then return end
 
   if msg.payloadType == "DUST_UPDATE" then
@@ -763,7 +799,8 @@ local function drawStaticFrame()
   gpu.setForeground(0x00FF00)
   gpu.fill(1, 1, W, 1, "="); gpu.fill(1, 5, W, 1, "=")
   term.setCursor(2, 2); gpu.setForeground(0xFFFFFF); io.write("MEDINA BROKER MK3  (v1.5)")
-  term.setCursor(2, 3); gpu.setForeground(0x666666); io.write("[T/F4] EDIT TARGETS")
+  term.setCursor(2, 3); gpu.setForeground(0x666666)
+  io.write("REMOTE TARGET EDITOR: PORT " .. config.ports.command)
   term.setCursor(P1 + 1, 4); io.write("MODULES")
   term.setCursor(P2 + 1, 4); io.write("DUST STOCK")
   term.setCursor(P3 + 1, 4); io.write("HARDWARE")
@@ -851,6 +888,9 @@ if modem.isOpen(config.ports.telemetry) then
 else
   logger:error("Modem NOT open on port " .. config.ports.telemetry)
 end
+if not modem.isOpen(config.ports.command) then
+  logger:error("Modem NOT open on target editor port " .. config.ports.command)
+end
 
 -- Each part of the loop runs at the cadence it actually needs, so the heavy GPU
 -- redraw doesn't throttle the time-sensitive scheduler:
@@ -861,65 +901,10 @@ end
 local UI_INTERVAL = 0.25          -- seconds between full UI repaints
 local lastUIDraw  = 0
 
--- Normalize raw OC signals in one place. key_down is:
---   name, keyboardAddress, character, scanCode, playerName
--- and touch is:
---   name, screenAddress, x, y, button, playerName
--- Returns "input" for a cheap input/status repaint or "full" when selection
--- and list rows changed.
-local function handleLoopEvent(ev)
-  if not ev[1] then return nil end
-
-  if ev[1] == "interrupted" then
-    error("interrupted", 0)
-  elseif ev[1] == "modem_message" then
-    processMessage(table.unpack(ev))
-  elseif targetEditor and targetEditor:isOpen() and ev[1] == "key_down" then
-    local editorResult = targetEditor:handleKey(ev[3], ev[4])
-    if editorResult == "closed" then
-      drawStaticFrame()
-      lastUIDraw = 0
-      return nil
-    end
-    return editorResult
-  elseif targetEditor and targetEditor:isOpen() and ev[1] == "key_up" then
-    targetEditor:handleKeyUp(ev[4])
-  elseif targetEditor and targetEditor:isOpen() and ev[1] == "touch" then
-    return targetEditor:handleTouch(ev[3], ev[4])
-  elseif targetEditor and ev[1] == "key_down" then
-    local char, code = ev[3], ev[4]
-    if code == keyboard.keys.t or code == keyboard.keys.f4 or
-       char == string.byte("t") or char == string.byte("T") then
-      targetEditor:open()
-      return "full"
-    end
-  end
-
-  return nil
-end
-
 while true do
-  -- 1. Wait briefly for one signal, then drain a bounded batch of already
-  --    queued signals. Telemetry bursts can no longer leave keyboard input
-  --    sitting behind one-event-per-loop processing.
-  local editorRenderMode = handleLoopEvent({ event.pull(0.01) })
-  for _ = 1, 31 do
-    local queued = { event.pull(0) }
-    if not queued[1] then break end
-    local queuedMode = handleLoopEvent(queued)
-    if queuedMode == "full" or
-       (queuedMode == "input" and not editorRenderMode) then
-      editorRenderMode = queuedMode
-    end
-  end
-  if editorRenderMode and targetEditor and targetEditor:isOpen() then
-    if editorRenderMode == "full" then
-      targetEditor:draw()
-    else
-      targetEditor:drawFast()
-    end
-    lastUIDraw = computer.uptime()
-  end
+  -- 1. Service one telemetry or remote-editor message.
+  local ev = { event.pull(0.01, "modem_message") }
+  if ev[1] == "modem_message" then processMessage(table.unpack(ev)) end
 
   -- 2. Advance every in-flight load task. This is the hot path — runs every
   --    iteration so concurrent loads progress as fast as the hardware allows.
@@ -950,11 +935,7 @@ while true do
   --    frees the loop to tick the scheduler hundreds of times per second.
   local up = computer.uptime()
   if up - lastUIDraw >= UI_INTERVAL then
-    if targetEditor and targetEditor:isOpen() then
-      targetEditor:drawFast()
-    else
-      drawUI()
-    end
+    drawUI()
     lastUIDraw = up
   end
 end

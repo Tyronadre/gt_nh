@@ -900,7 +900,7 @@ config.reloadTargets()
 --------------------------------------------------------------------------------
 config.ports = {
   telemetry = 2026,  -- inbound to broker: telem nodes + job nodes → broker
-  command   = 2027   -- outbound from broker: broker → job nodes
+  command   = 2027   -- target editor RPC + optional broker → job-node commands
 }
 
 -- Seconds to wait after a job run before re-checking dust levels.

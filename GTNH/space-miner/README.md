@@ -30,7 +30,8 @@ Each module has its own ME Interface adapter + transposer; one shared OC Databas
 |------|---------|---------|
 | `config.lua` | *all nodes* | Project config — drones, drills, asteroids, plasmas, and optimization data. Copy to `/home/config.lua` on every computer. |
 | `target_config.lua` | *all nodes* | **Your stock settings.** Selects the default ME item-cell size and lists enabled items plus optional per-item overrides. The installer creates it once and never overwrites it. |
-| `target_editor.lua` | broker | Full-screen runtime editor for `target_config.lua`. Saving validates and applies targets without stopping the broker; includes scrolling, mouse selection, and a blinking insertion cursor. |
+| `target_editor.lua` | broker + editor | Shared target-editor UI and safe config persistence module. |
+| `target_editor_app.lua` | editor computer | Responsive standalone UI. Sends validated configurations to the running broker over port 2027. |
 | `broker-mk3.lua` | broker | **The broker.** Aggregates telemetry, dispatches jobs (drone-first with a per-asteroid cap), and spawns one cooperative load task per module. Requires `/home/job_node_config.lua`, `/home/scheduler.lua`, `/home/loader.lua`, `/home/target_editor.lua`, `/home/logger.lua`. |
 | `scheduler.lua` | broker | Cooperative task engine: `spawn`, `sleep`, `await`, fair `lock`. One clock (`computer.uptime`). Lets all 6 loads run concurrently without freezing the UI/telemetry. You never edit this to add features — you spawn a task. |
 | `loader.lua` | broker | One module's consumable-load sequence, run as a scheduler task. Confirms database fingerprints by read-back and routes items into the input bus by identity (not slot position). |
@@ -58,7 +59,7 @@ Each module has its own ME Interface adapter + transposer; one shared OC Databas
 3. **Identity-based item routing.** Items are moved into the input bus by matching their label in the interface buffer, not by trusting slot positions (the ME interface can shuffle buffer slots under load). Each load is verified before the machine is enabled; a bad load ERRORs and auto-recovers in ~10 s rather than running wrong.
 4. **Drone-first dispatch with a per-asteroid cap.** Uses the highest-tier available drones first, but no single asteroid may hold more than `floor(totalModules / 2) + 1` modules — so a high-tier target (e.g. Infinity Catalyst) can't starve lower-tier needs. Availability pools subtract drones/kits already committed to busy modules, preventing double-assignment.
 5. **Priority-mode boot prompt.** At startup, choose *Threshold* (mine the lowest stock/target ratio first) or *Rarity* (highest dust-priority first, then ratio).
-6. **Live target editor.** Press **T** or **F4** on the broker dashboard to change cell settings, enable or disable any registered item, and edit quantities while scheduler tasks, module lifecycle, and telemetry continue running.
+6. **Remote target editor.** A separate OC computer provides a responsive UI while the broker continues mining. The broker validates, saves, and applies submitted targets over port 2027.
 
 **Throughput:** all 6 modules load in ~1–2 s each and mine in parallel. Measured ~9.4× the earlier blocking design (≈100k → ≈938k Infinity Catalyst dust/hr), confirmed stable over a 12-hour soak test.
 
@@ -84,7 +85,7 @@ Loaded by every node with `dofile("/home/config.lua")`. Sections:
 8. **Dust target registry** — maps each tracked dust/item name to its source asteroid and a priority number
 9. **Module filter blacklist** — high-volume junk ores to exclude from module output
 10. **Resolved dust stock targets** — validates `target_config.lua` and builds the internal `config.conditions` list
-11. **Network settings** — `config.ports` (telemetry=2026; command=2027 reserved for optional remote job nodes), `config.pipelineCheckDelay` (default 30 s)
+11. **Network settings** — `config.ports` (telemetry=2026; target-editor/command=2027), `config.pipelineCheckDelay` (default 30 s)
 
 ---
 
@@ -122,10 +123,12 @@ triggering mining.
 
 The installer preserves an existing copy during updates.
 
-### Runtime Target Editor
+### Remote Target Editor
 
-Press **T** or **F4** on the broker dashboard. The editor does not stop running
-modules or telemetry.
+Run `target_editor_app.lua` on a separate OC computer with a T2 wireless card,
+GPU, screen, and keyboard. It fetches the current configuration from the live
+broker and owns its event/render loop, so mining hardware calls cannot delay
+keyboard input.
 
 - **Up/Down, Page Up/Page Down, Home/End** — navigate
 - **Space** — enable/disable an item or toggle keep-all mode
@@ -133,16 +136,18 @@ modules or telemetry.
 - **Left/Right, Home/End, Backspace/Delete** — move and edit at the blinking cursor
 - **Ctrl+S** — validate, save, and apply immediately
 - **Ctrl+R** — discard the draft, reload the file, and apply it
-- **Esc / Ctrl+W** — return to the dashboard; unsaved changes require confirmation
+- **Esc / Ctrl+W** — close the editor; unsaved changes require confirmation
 
-Saving is transactional: the editor validates the complete target set, writes a
-temporary Lua file, retains `target_config.lua.bak`, then replaces and applies
-the live configuration. Dispatch briefly waits for a complete fresh dust
-telemetry batch so newly enabled items cannot be mistaken for zero stock.
+On **Ctrl+S**, the application sends the complete target set to the broker. The
+broker validates it, writes a temporary Lua file, retains
+`target_config.lua.bak`, then replaces and applies the live configuration.
+Dispatch briefly waits for a complete fresh dust telemetry batch so newly
+enabled items cannot be mistaken for zero stock.
 Typing immediately after opening a field replaces its old value; moving the
 cursor first switches to in-place editing.
-Text input uses an immediate three-line repaint (input, status, footer); the
-larger item list is only redrawn when its selection or contents change.
+The standalone loop polls input every 50 ms. Text input uses an immediate
+three-line repaint; the larger item list is only redrawn when its selection or
+contents change.
 
 ---
 
@@ -388,11 +393,24 @@ Copy these to the broker computer:
    - `dbAddr` — the shared OC Database (3 slots used per module)
    - per module: `tier`, `moduleAddr` (module controller adapter), `ifaceAddr` (ME interface adapter), `transposerAddr`, `interfaceSide`, `inputBusSide`
    - Find addresses with `list_components.lua`, or add modules with `detect_module.lua`.
-2. Run `broker-mk3.lua`. It prompts for **priority mode** (Threshold / Rarity), then draws the dashboard and begins dispatching once telemetry arrives. Press **T** or **F4** to edit targets live.
+2. Run `broker-mk3.lua`. It prompts for **priority mode** (Threshold / Rarity), then draws the dashboard and begins dispatching once telemetry arrives.
 
 To stop it, break the script with **Ctrl+Alt+C** in the OC console.
 
-### 4. Multi-node fleets (future / optional)
+### 4. Remote target editor
+
+On a separate computer, install the **Target editor** role or copy:
+
+```
+/home/config.lua
+/home/target_config.lua
+/home/target_editor.lua
+/home/target_editor_app.lua
+```
+
+Run `target_editor_app`. It discovers the broker wirelessly on port 2027.
+
+### 5. Multi-node fleets (future / optional)
 
 The single broker is limited by the host computer's component budget (≈6 modules on a typical bus; far more on a creative component bus). The shared database caps the fleet at **27 modules** (81 slots ÷ 3). To scale past one broker's component limit, `job_node.lua` can run remote workers on additional computers — each driving its own modules and partitioning into the shared database. This is the path back toward the multi-elevator architecture; the per-asteroid cap already scales with total module count.
 

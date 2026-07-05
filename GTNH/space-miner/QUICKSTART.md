@@ -43,8 +43,8 @@ wget https://raw.githubusercontent.com/novashep/GTNH/main/space-miner/install-me
 install-medina
 ```
 
-It asks what the computer is (broker / dust node / hardware node / fluid node /
-remote job node / everything) and downloads only the files that role needs. Run
+It asks what the computer is (broker / telemetry node / remote job node /
+target editor / everything) and downloads only the files that role needs. Run
 it once per computer, picking the matching role each time.
 
 ### Manual way
@@ -65,6 +65,15 @@ wget RAW_BASE/logger.lua                /home/logger.lua
 wget RAW_BASE/list_components.lua       /home/list_components.lua
 wget RAW_BASE/detect_module.lua         /home/detect_module.lua
 wget RAW_BASE/job_node_config.example.lua /home/job_node_config.lua
+```
+
+**On a separate target-editor computer:**
+
+```
+wget RAW_BASE/config.lua             /home/config.lua
+wget RAW_BASE/target_config.lua      /home/target_config.lua
+wget RAW_BASE/target_editor.lua      /home/target_editor.lua
+wget RAW_BASE/target_editor_app.lua  /home/target_editor_app.lua
 ```
 
 **On the dust monitor node (required):**
@@ -145,11 +154,10 @@ MEDINA already knows which asteroid produces each common dust, which drones can
 mine it, and the best distance to use (in the `dustTargets`, asteroid, and
 optimization sections — you usually don't need to touch those).
 
-After the broker starts, press **T** or **F4** to open the live target editor.
-Use **Space** to toggle an item, **Enter** to edit its target, and **Ctrl+S** to
-validate, save, and apply. The insertion position blinks and supports
-Left/Right, Home/End, Backspace, and Delete. Mining and telemetry continue while
-the editor is open. **Esc** returns to the dashboard.
+On the separate editor computer, run `target_editor_app`. Use **Space** to
+toggle an item, **Enter** to edit its target, and **Ctrl+S** to send, validate,
+save, and apply it on the running broker. The insertion position blinks and
+supports Left/Right, Home/End, Backspace, and Delete. **Esc** closes the editor.
 
 ---
 

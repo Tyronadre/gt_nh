@@ -133,6 +133,12 @@ local function writeAtomic(path, content)
   return true
 end
 
+-- Shared persistence API. The standalone editor uses this for its local cache,
+-- while the broker uses it for remotely submitted configurations.
+function editorModule.writeSettings(path, settings)
+  return writeAtomic(path, serializeTargetConfig(settings))
+end
+
 function editorModule.create(options)
   assert(options and options.gpu and options.term and options.keyboard and options.computer,
          "target editor requires gpu, term, keyboard, and computer")
@@ -370,7 +376,20 @@ function editorModule.create(options)
       return false
     end
 
-    local written, writeError = writeAtomic(path, serializeTargetConfig(editor.draft))
+    local written, writeError
+    if options.persist then
+      local persistCallOk, persistResult, persistMessage =
+        pcall(options.persist, clone(editor.draft))
+      if persistCallOk then
+        written = persistResult == true
+        writeError = persistMessage
+      else
+        written = false
+        writeError = persistResult
+      end
+    else
+      written, writeError = editorModule.writeSettings(path, editor.draft)
+    end
     if not written then
       setHint("NOT SAVED: " .. tostring(writeError))
       return false
@@ -384,12 +403,17 @@ function editorModule.create(options)
 
     editor.dirty = false
     editor.confirmClose = false
-    setHint("Saved and applied. Waiting for fresh dust telemetry.")
+    setHint(writeError or "Saved and applied.")
     return true
   end
 
   local function reload()
-    local loaded, settings = pcall(dofile, path)
+    local loaded, settings
+    if options.reload then
+      loaded, settings = pcall(options.reload)
+    else
+      loaded, settings = pcall(dofile, path)
+    end
     if not loaded or type(settings) ~= "table" then
       setHint("Reload failed: " .. tostring(settings))
       return false
@@ -418,6 +442,10 @@ function editorModule.create(options)
 
   function editor:isOpen()
     return self.active
+  end
+
+  function editor:isEditing()
+    return self.active and self.edit ~= nil
   end
 
   function editor:open()
