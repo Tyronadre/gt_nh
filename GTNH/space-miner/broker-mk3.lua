@@ -865,9 +865,10 @@ local lastUIDraw  = 0
 --   name, keyboardAddress, character, scanCode, playerName
 -- and touch is:
 --   name, screenAddress, x, y, button, playerName
--- Returns true when the editor should be redrawn immediately.
+-- Returns "input" for a cheap input/status repaint or "full" when selection
+-- and list rows changed.
 local function handleLoopEvent(ev)
-  if not ev[1] then return false end
+  if not ev[1] then return nil end
 
   if ev[1] == "interrupted" then
     error("interrupted", 0)
@@ -878,38 +879,45 @@ local function handleLoopEvent(ev)
     if editorResult == "closed" then
       drawStaticFrame()
       lastUIDraw = 0
-      return false
+      return nil
     end
-    return true
+    return editorResult
   elseif targetEditor and targetEditor:isOpen() and ev[1] == "key_up" then
     targetEditor:handleKeyUp(ev[4])
   elseif targetEditor and targetEditor:isOpen() and ev[1] == "touch" then
-    targetEditor:handleTouch(ev[3], ev[4])
-    return true
+    return targetEditor:handleTouch(ev[3], ev[4])
   elseif targetEditor and ev[1] == "key_down" then
     local char, code = ev[3], ev[4]
     if code == keyboard.keys.t or code == keyboard.keys.f4 or
        char == string.byte("t") or char == string.byte("T") then
       targetEditor:open()
-      return true
+      return "full"
     end
   end
 
-  return false
+  return nil
 end
 
 while true do
   -- 1. Wait briefly for one signal, then drain a bounded batch of already
   --    queued signals. Telemetry bursts can no longer leave keyboard input
   --    sitting behind one-event-per-loop processing.
-  local editorNeedsRedraw = handleLoopEvent({ event.pull(0.01) })
+  local editorRenderMode = handleLoopEvent({ event.pull(0.01) })
   for _ = 1, 31 do
     local queued = { event.pull(0) }
     if not queued[1] then break end
-    if handleLoopEvent(queued) then editorNeedsRedraw = true end
+    local queuedMode = handleLoopEvent(queued)
+    if queuedMode == "full" or
+       (queuedMode == "input" and not editorRenderMode) then
+      editorRenderMode = queuedMode
+    end
   end
-  if editorNeedsRedraw and targetEditor and targetEditor:isOpen() then
-    targetEditor:draw()
+  if editorRenderMode and targetEditor and targetEditor:isOpen() then
+    if editorRenderMode == "full" then
+      targetEditor:draw()
+    else
+      targetEditor:drawFast()
+    end
     lastUIDraw = computer.uptime()
   end
 
@@ -943,7 +951,7 @@ while true do
   local up = computer.uptime()
   if up - lastUIDraw >= UI_INTERVAL then
     if targetEditor and targetEditor:isOpen() then
-      targetEditor:draw()
+      targetEditor:drawFast()
     else
       drawUI()
     end

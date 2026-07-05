@@ -453,26 +453,33 @@ function editorModule.create(options)
     if code == ESC_KEY then
       editor.edit = nil
       setHint("Edit cancelled.")
+      return "input"
     elseif code == keyboard.keys.enter or code == keyboard.keys.numpadenter then
       local ok, message = edit.commit(edit.buffer)
       if ok then
         editor.edit = nil
         setHint("Field updated. Press Ctrl+S to save and apply.")
+        return "full"
       else
         setHint(message)
+        return "input"
       end
     elseif code == keyboard.keys.left then
       edit.replaceOnType = false
       edit.cursor = math.max(0, edit.cursor - 1)
+      return "input"
     elseif code == keyboard.keys.right then
       edit.replaceOnType = false
       edit.cursor = math.min(#edit.buffer, edit.cursor + 1)
+      return "input"
     elseif code == keyboard.keys.home then
       edit.replaceOnType = false
       edit.cursor = 0
+      return "input"
     elseif code == keyboard.keys["end"] then
       edit.replaceOnType = false
       edit.cursor = #edit.buffer
+      return "input"
     elseif code == keyboard.keys.back then
       if edit.replaceOnType then
         edit.buffer = ""
@@ -483,6 +490,7 @@ function editorModule.create(options)
                       edit.buffer:sub(edit.cursor + 1)
         edit.cursor = edit.cursor - 1
       end
+      return "input"
     elseif code == keyboard.keys.delete then
       if edit.replaceOnType then
         edit.buffer = ""
@@ -492,6 +500,7 @@ function editorModule.create(options)
         edit.buffer = edit.buffer:sub(1, edit.cursor) ..
                       edit.buffer:sub(edit.cursor + 2)
       end
+      return "input"
     elseif char and char >= 32 and char <= 126 then
       if edit.replaceOnType then
         edit.buffer = ""
@@ -502,7 +511,9 @@ function editorModule.create(options)
       edit.buffer = edit.buffer:sub(1, edit.cursor) .. inserted ..
                     edit.buffer:sub(edit.cursor + 1)
       edit.cursor = edit.cursor + 1
+      return "input"
     end
+    return nil
   end
 
   function editor:handleKey(char, code)
@@ -519,37 +530,49 @@ function editorModule.create(options)
       if committed then
         self.edit = nil
         save()
+        return "full"
       else
         setHint(message)
+        return "input"
       end
     elseif self.edit then
-      handleEditKey(char, code)
+      return handleEditKey(char, code)
     elseif controlDown then
-      if code == keyboard.keys.s then save()
-      elseif code == keyboard.keys.r then reload()
+      if code == keyboard.keys.s then save(); return "full"
+      elseif code == keyboard.keys.r then reload(); return "full"
       elseif code == keyboard.keys.w then
         if requestClose() then return "closed" end
+        return "input"
       end
     elseif code == ESC_KEY then
       if requestClose() then return "closed" end
+      return "input"
     elseif code == keyboard.keys.up then
       self.selected = (self.selected - 2) % totalRows() + 1
       self.confirmClose = false
+      return "full"
     elseif code == keyboard.keys.down then
       self.selected = self.selected % totalRows() + 1
       self.confirmClose = false
+      return "full"
     elseif code == keyboard.keys.pageUp then
       self.selected = math.max(1, self.selected - 10)
+      return "full"
     elseif code == keyboard.keys.pageDown then
       self.selected = math.min(totalRows(), self.selected + 10)
+      return "full"
     elseif code == keyboard.keys.home then
       self.selected = 1
+      return "full"
     elseif code == keyboard.keys["end"] then
       self.selected = totalRows()
+      return "full"
     elseif code == keyboard.keys.space then
       toggleSelectedItem()
+      return "full"
     elseif code == keyboard.keys.enter or code == keyboard.keys.numpadenter then
       beginSelectedEdit()
+      return self.edit and "input" or "full"
     end
 
     return nil
@@ -572,7 +595,7 @@ function editorModule.create(options)
       end
     end
     self.confirmClose = false
-    return nil
+    return "full"
   end
 
   local function drawRow(y, text, selected, color)
@@ -592,6 +615,10 @@ function editorModule.create(options)
   end
 
   local function drawInput(width, height)
+    local y = height - 2
+    gpu.setBackground(0x000000)
+    gpu.setForeground(0xFFFFFF)
+    gpu.fill(1, y, width, 1, " ")
     if not editor.edit then return end
     local edit = editor.edit
     local prefix = "EDIT " .. edit.label .. ": "
@@ -599,11 +626,6 @@ function editorModule.create(options)
     local viewStart = math.max(1, edit.cursor - available + 2)
     local visible = edit.buffer:sub(viewStart, viewStart + available - 1)
     local x = 2 + #prefix
-    local y = height - 2
-
-    gpu.setBackground(0x000000)
-    gpu.setForeground(0xFFFFFF)
-    gpu.fill(1, y, width, 1, " ")
     gpu.set(2, y, prefix:sub(1, width - 2))
     if x <= width then gpu.set(x, y, visible) end
 
@@ -620,6 +642,27 @@ function editorModule.create(options)
         gpu.setBackground(0x000000)
       end
     end
+  end
+
+  local function drawStatus(width, height)
+    gpu.setBackground(0x000000)
+    gpu.setForeground(editor.dirty and 0xFFAA00 or 0x777777)
+    gpu.fill(1, height - 1, width, 1, " ")
+    gpu.set(2, height - 1,
+            ((editor.dirty and "* UNSAVED *  " or "") .. editor.hint):sub(1, width - 2))
+    gpu.setForeground(0xFFFFFF)
+    gpu.fill(1, height, width, 1, " ")
+    gpu.set(2, height,
+            "[Ctrl+S] Save+apply  [Ctrl+R] Reload  [Esc/Ctrl+W] Dashboard")
+  end
+
+  -- Cheap repaint used for typing and cursor blinking. It touches only the
+  -- bottom three rows instead of rebuilding the entire item list.
+  function editor:drawFast()
+    if not self.active then return end
+    local width, height = gpu.getResolution()
+    drawInput(width, height)
+    drawStatus(width, height)
   end
 
   function editor:draw()
@@ -686,15 +729,7 @@ function editorModule.create(options)
 
     drawInput(width, height)
 
-    gpu.setBackground(0x000000)
-    gpu.setForeground(editor.dirty and 0xFFAA00 or 0x777777)
-    gpu.fill(1, height - 1, width, 1, " ")
-    gpu.set(2, height - 1,
-            ((editor.dirty and "* UNSAVED *  " or "") .. editor.hint):sub(1, width - 2))
-    gpu.setForeground(0xFFFFFF)
-    gpu.fill(1, height, width, 1, " ")
-    gpu.set(2, height,
-            "[Ctrl+S] Save+apply  [Ctrl+R] Reload  [Esc/Ctrl+W] Dashboard")
+    drawStatus(width, height)
   end
 
   return editor

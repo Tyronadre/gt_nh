@@ -141,6 +141,8 @@ the live configuration. Dispatch briefly waits for a complete fresh dust
 telemetry batch so newly enabled items cannot be mistaken for zero stock.
 Typing immediately after opening a field replaces its old value; moving the
 cursor first switches to in-place editing.
+Text input uses an immediate three-line repaint (input, status, footer); the
+larger item list is only redrawn when its selection or contents change.
 
 ---
 
