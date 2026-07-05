@@ -678,7 +678,7 @@ config.dustTargets = {
   ["Niobium Dust"]             = { asteroid="Niobium",             priority=1 },
   ["Phosphate Dust"]           = { asteroid="Phosphate",           priority=1 },
   ["Quartz Dust"]              = { asteroid="Quartz",              priority=1 },
-  ["Salt"]                = { asteroid="Salt",                priority=1 },
+  ["Salt"]                     = { asteroid="Salt",                priority=1 },
   ["Silicon Dust"]             = { asteroid="Silicon",             priority=1 },
   ["Thaumium Dust"]            = { asteroid="Thaumium Dusts",      priority=1 },
   ["Tungsten Dust"]            = { asteroid="Tungsten-Titanium",   priority=1 },
@@ -746,7 +746,7 @@ local function loadTargetConfig()
     local ok, result = pcall(dofile, path)
     if ok then
       assert(type(result) == "table", path .. " must return a table")
-      return result
+      return result, path
     end
     errors[#errors+1] = path .. ": " .. tostring(result)
   end
@@ -822,54 +822,78 @@ local function resolveTarget(itemName, itemSettings, targetSettings)
   return math.floor(target)
 end
 
-local targetSettings = loadTargetConfig()
-assert(type(targetSettings.items) == "table",
-       "target_config.lua must contain an items table")
-assert(targetSettings.keepAllMinedItems == nil or
-       type(targetSettings.keepAllMinedItems) == "boolean",
-       "keepAllMinedItems in target_config.lua must be true or false")
+local function buildTargetConditions(targetSettings)
+  assert(type(targetSettings) == "table",
+         "target settings must be a table")
+  assert(type(targetSettings.items) == "table",
+         "target_config.lua must contain an items table")
+  assert(targetSettings.keepAllMinedItems == nil or
+         type(targetSettings.keepAllMinedItems) == "boolean",
+         "keepAllMinedItems in target_config.lua must be true or false")
 
-config.targetSettings = targetSettings
-config.conditions = {}
-
--- Start with every known target when requested, then apply the explicit item
--- map as an override layer. A false value therefore excludes an item even in
--- keep-all mode.
-local configuredItems = {}
-if targetSettings.keepAllMinedItems then
-  for itemName in pairs(config.dustTargets) do
-    configuredItems[itemName] = true
-  end
-end
-for itemName, itemSettings in pairs(targetSettings.items) do
-  configuredItems[itemName] = itemSettings
-end
-
-for itemName, itemSettings in pairs(configuredItems) do
-  assert(type(itemName) == "string", "Every target item name must be a string")
-  local registryEntry = config.dustTargets[itemName]
-  assert(registryEntry, "Unknown target item '" .. itemName ..
-         "': add it to config.dustTargets first or correct the spelling")
-  assert(config.asteroids[registryEntry.asteroid],
-         "Target item '" .. itemName .. "' references unknown asteroid '" ..
-         tostring(registryEntry.asteroid) .. "'")
-
-  local target = resolveTarget(itemName, itemSettings, targetSettings)
-  if target then
-    local priority = type(itemSettings) == "table" and itemSettings.priority or nil
-    if priority ~= nil then
-      assert(type(priority) == "number",
-             "priority for '" .. itemName .. "' must be a number")
+  -- Start with every known target when requested, then apply the explicit item
+  -- map as an override layer. A false value therefore excludes an item even in
+  -- keep-all mode.
+  local configuredItems = {}
+  if targetSettings.keepAllMinedItems then
+    for itemName in pairs(config.dustTargets) do
+      configuredItems[itemName] = true
     end
-    config.conditions[#config.conditions+1] = {
-      itemName = itemName,
-      amountToMaintain = target,
-      priority = priority,
-    }
   end
+  for itemName, itemSettings in pairs(targetSettings.items) do
+    configuredItems[itemName] = itemSettings
+  end
+
+  local conditions = {}
+  for itemName, itemSettings in pairs(configuredItems) do
+    assert(type(itemName) == "string", "Every target item name must be a string")
+    local registryEntry = config.dustTargets[itemName]
+    assert(registryEntry, "Unknown target item '" .. itemName ..
+           "': add it to config.dustTargets first or correct the spelling")
+    assert(config.asteroids[registryEntry.asteroid],
+           "Target item '" .. itemName .. "' references unknown asteroid '" ..
+           tostring(registryEntry.asteroid) .. "'")
+
+    local target = resolveTarget(itemName, itemSettings, targetSettings)
+    if target then
+      local priority = type(itemSettings) == "table" and itemSettings.priority or nil
+      if priority ~= nil then
+        assert(type(priority) == "number",
+               "priority for '" .. itemName .. "' must be a number")
+      end
+      conditions[#conditions+1] = {
+        itemName = itemName,
+        amountToMaintain = target,
+        priority = priority,
+      }
+    end
+  end
+
+  table.sort(conditions, function(a, b) return a.itemName < b.itemName end)
+  return conditions
 end
 
-table.sort(config.conditions, function(a, b) return a.itemName < b.itemName end)
+-- Public runtime hooks used by target_editor.lua. Validation is completed
+-- before the live config is replaced, so a bad edit cannot break dispatch.
+function config.buildTargetConditions(targetSettings)
+  return buildTargetConditions(targetSettings)
+end
+
+function config.applyTargetSettings(targetSettings)
+  local conditions = buildTargetConditions(targetSettings)
+  config.targetSettings = targetSettings
+  config.conditions = conditions
+  return conditions
+end
+
+function config.reloadTargets()
+  local targetSettings, path = loadTargetConfig()
+  config.targetConfigPath = path
+  config.applyTargetSettings(targetSettings)
+  return targetSettings
+end
+
+config.reloadTargets()
 
 --------------------------------------------------------------------------------
 -- 11. NETWORK & RUNTIME SETTINGS

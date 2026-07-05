@@ -113,6 +113,7 @@ MEDINA (Modular Extraction and Dispatch Intelligence Network Array) is a wireles
 
 **Supporting modules (on the same computer):**
 - `scheduler.lua` — cooperative task engine (spawn / sleep / await / lock; one clock via `computer.uptime`)
+- `target_editor.lua` — non-blocking runtime editor; atomically saves and applies `target_config.lua`
 - `loader.lua` — per-module load sequence, run as a task; read-back confirmation + identity-based item routing
 - `logger.lua` — configurable logging (file / console / Loki); disabled by default, ERROR/WARN to `/tmp/spacemining.log`
 
@@ -147,11 +148,12 @@ MEDINA (Modular Extraction and Dispatch Intelligence Network Array) is a wireles
 - ME Controller or ME Interface (read-only access to dust storage)
 
 **Network:**
-- **Outbound (Port 2026):** Broadcasts DUST_UPDATE payload every 10 seconds
-- Payload: dust item names and current stock counts
+- **Outbound (Port 2026):** Broadcasts chunked DUST_UPDATE payloads every 10 seconds
+- Payload: all registered mineable item names and current stock counts
 
 **Monitored Items:**
-- Items enabled in `target_config.lua`; `config.lua` validates and resolves them into `config.conditions`
+- All items in `config.dustTargets` are scanned so the broker can enable them at runtime
+- Items enabled in `target_config.lua` are resolved into `config.conditions`
 - Only items below threshold trigger mining jobs
 
 ---
@@ -271,6 +273,7 @@ All telemetry nodes send updates in this format:
   protocol    = "MEDINA_TELEMETRY",
   sender      = "node-id",
   payloadType = "HW_UPDATE" | "DUST_UPDATE" | "FLUID_UPDATE",
+  -- DUST_UPDATE also carries batchId, chunkIndex, and chunkCount.
   data        = { ... }
 }
 ```
@@ -286,11 +289,15 @@ All telemetry nodes send updates in this format:
 **DUST_UPDATE** data:
 ```lua
 {
-  ["Uranium-238 Dust"] = 50000,
-  ["Plutonium-239 Dust"] = 12000,
+  ["Uranium 238 Dust"] = { stock=50000, threshold=0 },
+  ["Plutonium 239 Dust"] = { stock=12000, threshold=10000000 },
   ...
 }
 ```
+
+The dust node splits one inventory snapshot into bounded chunks. The broker
+waits until every chunk in a batch has arrived before dispatching against a
+freshly edited target set.
 
 **FLUID_UPDATE** data:
 ```lua

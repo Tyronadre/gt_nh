@@ -45,7 +45,7 @@ targets.CELL_CAPACITIES = {
 -- Set this to true to automatically enable every mineable item registered in
 -- config.dustTargets. Entries in targets.items below still take precedence, so
 -- they can override a target or exclude an item with false.
-targets.keepAllMinedItems = false
+targets.keepAllMinedItems = true
 
 -- Supported forms:
 --   ["Diamond"] = true,                 -- use the default cell target
@@ -63,9 +63,7 @@ targets.keepAllMinedItems = false
 targets.items = {
   ["Cosmic Neutronium Dust"] = true,
   ["Diamond"]                 = true,
-  ["Nether Star"]             = "1m",
   ["Infinity Catalyst Dust"]  = true,
-  ["Plutonium 239 Dust"]      = "10m",
 }
 
 return targets

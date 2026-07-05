@@ -18,7 +18,8 @@
 --   - Per-module: Adapter (module controller), Adapter (ME interface), Transposer
 --
 -- Requires: /home/scheduler.lua, /home/loader.lua, /home/job_node_config.lua,
---           /home/config.lua, /home/target_config.lua, /home/logger.lua
+--           /home/config.lua, /home/target_config.lua, /home/target_editor.lua,
+--           /home/logger.lua
 -- =============================================================================
 
 local component = require("component")
@@ -27,10 +28,12 @@ local event     = require("event")
 local term      = require("term")
 local fs        = require("filesystem")
 local computer  = require("computer")
+local keyboard  = require("keyboard")
 
 local config = dofile("/home/config.lua")
 local sched  = dofile("/home/scheduler.lua")
 local loader = dofile("/home/loader.lua")
+local targetEditorModule = dofile("/home/target_editor.lua")
 
 local loggingModule = dofile("/home/logger.lua")
 assert(loggingModule and loggingModule.createLogger, "logger.lua not loaded")
@@ -109,7 +112,8 @@ local brokerState = {
   dust = {}, plasma = {}, drones = {}, drills = {}, jobs = {}, cooldowns = {},
   lastDustSyncTime = 0, lastFluidSyncTime = 0, lastHWSyncTime = 0,
   lastDustSync = "--:--:--", lastFluidSync = "--:--:--", lastHWSync = "--:--:--",
-  nextTarget = nil, telemetryReady = false,
+  nextTarget = nil, telemetryReady = false, awaitingDustRefresh = true,
+  dustBatchId = nil, dustChunks = {},
   priorityMode = "threshold",  -- "threshold" (lowest fill first) | "rarity" (dust priority first)
 }
 
@@ -137,6 +141,31 @@ local DISPATCH_INTERVAL = 0.2
 local lastDispatchCheck = 0
 local ERROR_TIMEOUT = 10
 local lastErrorTime = {}
+
+local function applyRuntimeTargets(targetSettings)
+  config.applyTargetSettings(targetSettings)
+  for _, cond in ipairs(config.conditions) do
+    local current = brokerState.dust[cond.itemName] or { stock=0 }
+    current.threshold = cond.amountToMaintain
+    brokerState.dust[cond.itemName] = current
+  end
+  brokerState.awaitingDustRefresh = true
+  brokerState.nextTarget = nil
+  lastDispatchCheck = 0
+  logger:info("[TARGETS] Runtime target configuration updated; " ..
+              #config.conditions .. " active items")
+end
+
+local targetEditor = gpu and targetEditorModule.create({
+  gpu = gpu,
+  term = term,
+  keyboard = keyboard,
+  computer = computer,
+  config = config,
+  path = config.targetConfigPath or "/home/target_config.lua",
+  validate = config.buildTargetConditions,
+  apply = applyRuntimeTargets,
+}) or nil
 
 -- =============================================================================
 -- MODULE LIFECYCLE
@@ -474,10 +503,30 @@ local function processMessage(evType, _, _, _, _, rawMsg)
 
   if msg.payloadType == "DUST_UPDATE" then
     for name, entry in pairs(msg.data) do
-      brokerState.dust[name] = { stock = entry.stock or 0, threshold = entry.threshold or 0 }
+      local current = brokerState.dust[name] or {}
+      current.stock = entry.stock or 0
+      if entry.threshold and entry.threshold > 0 then
+        current.threshold = entry.threshold
+      end
+      brokerState.dust[name] = current
     end
     brokerState.lastDustSyncTime = os.time()
     brokerState.lastDustSync = os.date("%X")
+    if msg.chunkCount and msg.chunkIndex and msg.batchId then
+      if brokerState.dustBatchId ~= msg.batchId then
+        brokerState.dustBatchId = msg.batchId
+        brokerState.dustChunks = {}
+      end
+      brokerState.dustChunks[msg.chunkIndex] = true
+      local received = 0
+      for _ in pairs(brokerState.dustChunks) do received = received + 1 end
+      if received >= msg.chunkCount then
+        brokerState.awaitingDustRefresh = false
+      end
+    else
+      -- Backward compatibility with an unchunked dust telemetry sender.
+      brokerState.awaitingDustRefresh = false
+    end
   elseif msg.payloadType == "FLUID_UPDATE" and msg.data.plasmas then
     for name, amount in pairs(msg.data.plasmas) do
       if brokerState.plasma[name] ~= nil then brokerState.plasma[name] = amount end
@@ -594,7 +643,10 @@ local function drawHWPanel()
   for r = 6, H do clear(r) end
 
   clear(row); term.setCursor(P3 + 1, row)
-  if brokerState.nextTarget then
+  if brokerState.awaitingDustRefresh then
+    gpu.setForeground(0xFFFF00)
+    io.write("  NEXT: waiting for dust snapshot")
+  elseif brokerState.nextTarget then
     gpu.setForeground(0xFFAA00)
     io.write("  NEXT: " .. brokerState.nextTarget.asteroid)
   else
@@ -711,6 +763,7 @@ local function drawStaticFrame()
   gpu.setForeground(0x00FF00)
   gpu.fill(1, 1, W, 1, "="); gpu.fill(1, 5, W, 1, "=")
   term.setCursor(2, 2); gpu.setForeground(0xFFFFFF); io.write("MEDINA BROKER MK3  (v1.5)")
+  term.setCursor(2, 3); gpu.setForeground(0x666666); io.write("[T/F4] EDIT TARGETS")
   term.setCursor(P1 + 1, 4); io.write("MODULES")
   term.setCursor(P2 + 1, 4); io.write("DUST STOCK")
   term.setCursor(P3 + 1, 4); io.write("HARDWARE")
@@ -812,8 +865,26 @@ while true do
   -- 1. Service one inbound message. Very short timeout: returns immediately if a
   --    message is waiting, otherwise yields the CPU for ~10ms and comes back so
   --    the scheduler keeps ticking fast.
-  local ev = { event.pull(0.01, "modem_message") }
-  if ev[1] == "modem_message" then processMessage(table.unpack(ev)) end
+  local ev = { event.pull(0.01) }
+  if ev[1] == "interrupted" then
+    error("interrupted", 0)
+  elseif ev[1] == "modem_message" then
+    processMessage(table.unpack(ev))
+  elseif targetEditor and targetEditor:isOpen() and
+         (ev[1] == "key_down" or ev[1] == "touch") then
+    local editorResult = targetEditor:handleEvent(table.unpack(ev))
+    if editorResult == "closed" then
+      drawStaticFrame()
+      lastUIDraw = 0
+    end
+  elseif targetEditor and ev[1] == "key_down" then
+    local char, code = ev[3], ev[4]
+    if code == keyboard.keys.t or code == keyboard.keys.f4 or
+       char == string.byte("t") or char == string.byte("T") then
+      targetEditor:open()
+      targetEditor:draw()
+    end
+  end
 
   -- 2. Advance every in-flight load task. This is the hot path — runs every
   --    iteration so concurrent loads progress as fast as the hardware allows.
@@ -833,7 +904,8 @@ while true do
 
   -- 5. Dispatch on its own cadence.
   local now = os.time()
-  if brokerState.telemetryReady and (now - lastDispatchCheck >= DISPATCH_INTERVAL) then
+  if brokerState.telemetryReady and not brokerState.awaitingDustRefresh and
+     (now - lastDispatchCheck >= DISPATCH_INTERVAL) then
     dispatchBatch()
     lastDispatchCheck = now
   end
@@ -843,7 +915,11 @@ while true do
   --    frees the loop to tick the scheduler hundreds of times per second.
   local up = computer.uptime()
   if up - lastUIDraw >= UI_INTERVAL then
-    drawUI()
+    if targetEditor and targetEditor:isOpen() then
+      targetEditor:draw()
+    else
+      drawUI()
+    end
     lastUIDraw = up
   end
 end

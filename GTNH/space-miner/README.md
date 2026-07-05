@@ -30,11 +30,12 @@ Each module has its own ME Interface adapter + transposer; one shared OC Databas
 |------|---------|---------|
 | `config.lua` | *all nodes* | Project config — drones, drills, asteroids, plasmas, and optimization data. Copy to `/home/config.lua` on every computer. |
 | `target_config.lua` | *all nodes* | **Your stock settings.** Selects the default ME item-cell size and lists enabled items plus optional per-item overrides. The installer creates it once and never overwrites it. |
-| `broker-mk3.lua` | broker | **The broker.** Aggregates telemetry, dispatches jobs (drone-first with a per-asteroid cap), and spawns one cooperative load task per module. Requires `/home/job_node_config.lua`, `/home/scheduler.lua`, `/home/loader.lua`, `/home/logger.lua`. |
+| `target_editor.lua` | broker | Full-screen runtime editor for `target_config.lua`. Saving validates and applies targets without stopping the broker; includes scrolling, mouse selection, and a blinking insertion cursor. |
+| `broker-mk3.lua` | broker | **The broker.** Aggregates telemetry, dispatches jobs (drone-first with a per-asteroid cap), and spawns one cooperative load task per module. Requires `/home/job_node_config.lua`, `/home/scheduler.lua`, `/home/loader.lua`, `/home/target_editor.lua`, `/home/logger.lua`. |
 | `scheduler.lua` | broker | Cooperative task engine: `spawn`, `sleep`, `await`, fair `lock`. One clock (`computer.uptime`). Lets all 6 loads run concurrently without freezing the UI/telemetry. You never edit this to add features — you spawn a task. |
 | `loader.lua` | broker | One module's consumable-load sequence, run as a scheduler task. Confirms database fingerprints by read-back and routes items into the input bus by identity (not slot position). |
 | `logger.lua` | broker | Logging with a configurable backend (file / console / Loki). Disabled by default — ERROR/WARN still written to `/tmp/spacemining.log`. Configure under `config.logging`. |
-| `dust_telem.lua` | dust node **(required)** | Queries the dust-storage ME subnet every 10 s; broadcasts tracked item stocks to the broker. Broker won't dispatch without it. |
+| `dust_telem.lua` | dust node **(required)** | Queries the dust-storage ME subnet every 10 s; broadcasts all known mineable item stocks in bounded chunks. Broker won't dispatch without it. |
 | `hw_telem.lua` | hw node **(required)** | Scans the hardware-staging ME network every 10 s for drone counts and drill kit pairs. Broker won't dispatch without it. |
 | `fluid_telem.lua` | fluid node **(required)** | Queries the plasma ME fluid network every 10 s; broadcasts plasma volumes. Modules need plasma to run, so the broker won't dispatch without it. |
 | `job_node.lua` | remote worker *(optional)* | Legacy remote worker for additional modules on a separate computer. Retained for future multi-node fleets; not required for the single-broker setup. |
@@ -57,6 +58,7 @@ Each module has its own ME Interface adapter + transposer; one shared OC Databas
 3. **Identity-based item routing.** Items are moved into the input bus by matching their label in the interface buffer, not by trusting slot positions (the ME interface can shuffle buffer slots under load). Each load is verified before the machine is enabled; a bad load ERRORs and auto-recovers in ~10 s rather than running wrong.
 4. **Drone-first dispatch with a per-asteroid cap.** Uses the highest-tier available drones first, but no single asteroid may hold more than `floor(totalModules / 2) + 1` modules — so a high-tier target (e.g. Infinity Catalyst) can't starve lower-tier needs. Availability pools subtract drones/kits already committed to busy modules, preventing double-assignment.
 5. **Priority-mode boot prompt.** At startup, choose *Threshold* (mine the lowest stock/target ratio first) or *Rarity* (highest dust-priority first, then ratio).
+6. **Live target editor.** Press **T** or **F4** on the broker dashboard to change cell settings, enable or disable any registered item, and edit quantities while scheduler tasks, module lifecycle, and telemetry continue running.
 
 **Throughput:** all 6 modules load in ~1–2 s each and mine in parallel. Measured ~9.4× the earlier blocking design (≈100k → ≈938k Infinity Catalyst dust/hr), confirmed stable over a 12-hour soak test.
 
@@ -118,8 +120,25 @@ a different target. Keep-all mode assumes those exact item labels reach the
 dust-storage network; otherwise an unseen item remains at 0% and keeps
 triggering mining.
 
-Keep the same `target_config.lua` on the broker and dust node and restart both
-after changing it. The installer preserves an existing copy during updates.
+The installer preserves an existing copy during updates.
+
+### Runtime Target Editor
+
+Press **T** or **F4** on the broker dashboard. The editor does not stop running
+modules or telemetry.
+
+- **Up/Down, Page Up/Page Down, Home/End** — navigate
+- **Space** — enable/disable an item or toggle keep-all mode
+- **Enter** — edit the selected setting/target
+- **Left/Right, Home/End, Backspace/Delete** — move and edit at the blinking cursor
+- **Ctrl+S** — validate, save, and apply immediately
+- **Ctrl+R** — discard the draft, reload the file, and apply it
+- **Esc / Ctrl+W** — return to the dashboard; unsaved changes require confirmation
+
+Saving is transactional: the editor validates the complete target set, writes a
+temporary Lua file, retains `target_config.lua.bak`, then replaces and applies
+the live configuration. Dispatch briefly waits for a complete fresh dust
+telemetry batch so newly enabled items cannot be mistaken for zero stock.
 
 ---
 
@@ -127,9 +146,11 @@ after changing it. The installer preserves an existing copy during updates.
 
 **Hardware:** T2 wireless card · T3 GPU · T3 screen · OC Adapter on the **dust-storage ME Controller**
 
-Reads the targets resolved from `target_config.lua`, queries
-`adapter.getItemsInNetwork()`, and broadcasts a `DUST_UPDATE` payload every
-10 seconds.
+Queries `adapter.getItemsInNetwork()` and broadcasts all items registered in
+`config.dustTargets` every 10 seconds. The 104 entries are split into small
+`DUST_UPDATE` packets, allowing the broker editor to enable previously inactive
+items without restarting or reconfiguring the dust node. Its local screen still
+shows the configured ten lowest-fill targets.
 
 **Display (80×25):**
 ```
@@ -354,6 +375,7 @@ Copy these to the broker computer:
 /home/broker-mk3.lua
 /home/scheduler.lua
 /home/loader.lua
+/home/target_editor.lua
 /home/logger.lua
 ```
 
@@ -362,7 +384,7 @@ Copy these to the broker computer:
    - `dbAddr` — the shared OC Database (3 slots used per module)
    - per module: `tier`, `moduleAddr` (module controller adapter), `ifaceAddr` (ME interface adapter), `transposerAddr`, `interfaceSide`, `inputBusSide`
    - Find addresses with `list_components.lua`, or add modules with `detect_module.lua`.
-2. Run `broker-mk3.lua`. It prompts for **priority mode** (Threshold / Rarity), then draws the dashboard and begins dispatching once telemetry arrives.
+2. Run `broker-mk3.lua`. It prompts for **priority mode** (Threshold / Rarity), then draws the dashboard and begins dispatching once telemetry arrives. Press **T** or **F4** to edit targets live.
 
 To stop it, break the script with **Ctrl+Alt+C** in the OC console.
 
@@ -375,7 +397,7 @@ The single broker is limited by the host computer's component budget (≈6 modul
 ## Job Flow
 
 ```
-1. dust_telem broadcasts DUST_UPDATE (stock levels) every 10 s
+1. dust_telem broadcasts chunked DUST_UPDATE packets for all known stocks every 10 s
 2. fluid_telem broadcasts FLUID_UPDATE (plasma volumes) every 10 s
 3. hw_telem broadcasts HW_UPDATE (drones/drills) every 10 s
 

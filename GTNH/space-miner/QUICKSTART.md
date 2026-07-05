@@ -60,6 +60,7 @@ wget RAW_BASE/scheduler.lua             /home/scheduler.lua
 wget RAW_BASE/loader.lua                /home/loader.lua
 wget RAW_BASE/config.lua                /home/config.lua
 wget RAW_BASE/target_config.lua         /home/target_config.lua
+wget RAW_BASE/target_editor.lua         /home/target_editor.lua
 wget RAW_BASE/logger.lua                /home/logger.lua
 wget RAW_BASE/list_components.lua       /home/list_components.lua
 wget RAW_BASE/detect_module.lua         /home/detect_module.lua
@@ -144,7 +145,11 @@ MEDINA already knows which asteroid produces each common dust, which drones can
 mine it, and the best distance to use (in the `dustTargets`, asteroid, and
 optimization sections — you usually don't need to touch those).
 
-Copy the same `target_config.lua` to the broker and dust node, then restart both.
+After the broker starts, press **T** or **F4** to open the live target editor.
+Use **Space** to toggle an item, **Enter** to edit its target, and **Ctrl+S** to
+validate, save, and apply. The insertion position blinks and supports
+Left/Right, Home/End, Backspace, and Delete. Mining and telemetry continue while
+the editor is open. **Esc** returns to the dashboard.
 
 ---
 

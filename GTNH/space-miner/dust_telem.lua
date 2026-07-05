@@ -2,8 +2,8 @@
 -- Node ID: MEDINA-DustRelay
 -- File:    dust_telem.lua
 -- Purpose: Queries the dust storage ME subnet; displays the 10 most critical
---          items (lowest stock/threshold ratio) and broadcasts all tracked
---          stock levels to the broker on port 2026.
+--          configured items and broadcasts every known mineable item to the
+--          broker so runtime target edits can take effect without a restart.
 --
 -- OpenComputers Sides Reference Matrix:
 --   0 = Bottom / Down (-Y) | 1 = Top / Up (+Y) | 2 = North (-Z)
@@ -38,12 +38,19 @@ for _, cond in ipairs(config.conditions) do
   thresholds[cond.itemName] = cond.amountToMaintain
 end
 
+-- Scan every registered target, not just the locally configured targets. The
+-- broker can then enable a previously disabled item from its runtime editor.
+local trackedItems = {}
+for itemName in pairs(config.dustTargets) do
+  trackedItems[itemName] = true
+end
+
 local function scanDustStock()
   local stocks = {}
   local success, items = pcall(me_ctrl.getItemsInNetwork)
   if success and items then
     for _, item in ipairs(items) do
-      if item and item.label and thresholds[item.label] then
+      if item and item.label and trackedItems[item.label] then
         stocks[item.label] = (stocks[item.label] or 0) + item.size
       end
     end
@@ -109,22 +116,43 @@ end
 
 drawStaticFrame()
 
+local trackedNames = {}
+for itemName in pairs(trackedItems) do trackedNames[#trackedNames+1] = itemName end
+table.sort(trackedNames)
+
+-- Keep every serialized modem packet comfortably below OC's packet-size limit.
+local CHUNK_SIZE = 20
+local chunkCount = math.ceil(#trackedNames / CHUNK_SIZE)
+local batchId = 0
+
 while true do
   local stocks = scanDustStock()
   local sorted = buildSortedList(stocks)
   updateDashboard(sorted)
 
-  local payload = {}
-  for name, threshold in pairs(thresholds) do
-    payload[name] = { stock=stocks[name] or 0, threshold=threshold }
-  end
+  batchId = batchId + 1
+  for chunkIndex = 1, chunkCount do
+    local payload = {}
+    local first = (chunkIndex - 1) * CHUNK_SIZE + 1
+    local last = math.min(#trackedNames, first + CHUNK_SIZE - 1)
+    for index = first, last do
+      local name = trackedNames[index]
+      payload[name] = {
+        stock = stocks[name] or 0,
+        threshold = thresholds[name] or 0,
+      }
+    end
 
-  modem.broadcast(config.ports.telemetry, serialization.serialize({
-    protocol    = "MEDINA_TELEMETRY",
-    sender      = nodeName,
-    payloadType = "DUST_UPDATE",
-    data        = payload
-  }))
+    modem.broadcast(config.ports.telemetry, serialization.serialize({
+      protocol    = "MEDINA_TELEMETRY",
+      sender      = nodeName,
+      payloadType = "DUST_UPDATE",
+      batchId     = batchId,
+      chunkIndex  = chunkIndex,
+      chunkCount  = chunkCount,
+      data        = payload,
+    }))
+  end
 
   os.sleep(10)  -- Update every 10 seconds, not pipeline delay
 end

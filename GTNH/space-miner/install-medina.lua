@@ -36,7 +36,7 @@ local ROLES = {
   ["broker"] = {
     label = "Broker (main computer)",
     files = { "broker-mk3.lua", "scheduler.lua", "loader.lua", "logger.lua",
-              "list_components.lua", "detect_module.lua" },
+              "target_editor.lua", "list_components.lua", "detect_module.lua" },
     config = { ["job_node_config.example.lua"] = "job_node_config.lua" },
     note = "Edit /home/job_node_config.lua with your hardware, then run: broker-mk3",
   },
@@ -158,7 +158,7 @@ if choice == 6 then
   print("\nInstalling EVERYTHING from " .. RAW .. "\n")
   local everything = {
     "config.lua", "broker-mk3.lua", "scheduler.lua", "loader.lua", "logger.lua",
-    "list_components.lua", "detect_module.lua",
+    "target_editor.lua", "list_components.lua", "detect_module.lua",
     "dust_telem.lua", "hw_telem.lua", "fluid_telem.lua", "job_node.lua",
   }
   local allOk = true
