@@ -139,6 +139,8 @@ Saving is transactional: the editor validates the complete target set, writes a
 temporary Lua file, retains `target_config.lua.bak`, then replaces and applies
 the live configuration. Dispatch briefly waits for a complete fresh dust
 telemetry batch so newly enabled items cannot be mistaken for zero stock.
+Typing immediately after opening a field replaces its old value; moving the
+cursor first switches to in-place editing.
 
 ---
 

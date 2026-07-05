@@ -34,7 +34,7 @@ end
 
 local function parseQty(value)
   if type(value) == "number" then return value end
-  local normalized = string.lower((tostring(value):gsub("%s+", "")))
+  local normalized = string.lower((tostring(value):gsub("%s+", ""):gsub(",", ".")))
   local number, suffix = normalized:match("^(%d+%.?%d*)([kmbt]?)$")
   if not number then return tonumber(normalized) end
   local multipliers = { k=1000, m=1000000, b=1000000000, t=1000000000000 }
@@ -156,6 +156,7 @@ function editorModule.create(options)
     edit = nil,
     confirmClose = false,
     disabledValues = {},
+    controlDown = false,
   }
 
   local itemNames = sortedKeys(config.dustTargets)
@@ -217,9 +218,10 @@ function editorModule.create(options)
       buffer = text,
       cursor = #text,
       commit = commit,
+      replaceOnType = true,
     }
     editor.confirmClose = false
-    setHint("Enter applies this field; Esc cancels it.")
+    setHint("Type to replace; arrows edit in place; Enter applies; Esc cancels.")
   end
 
   local function commitGlobal(index, text)
@@ -236,7 +238,7 @@ function editorModule.create(options)
       end
       editor.draft.cellCount = value
     elseif index == 3 then
-      local value = tonumber(text)
+      local value = tonumber((text:gsub(",", ".")))
       if not value or value < 0 or value >= 1 then
         return false, "Safety margin must be at least 0 and below 1."
       end
@@ -425,6 +427,7 @@ function editorModule.create(options)
     self.edit = nil
     self.confirmClose = false
     self.disabledValues = {}
+    self.controlDown = keyboard.isControlDown()
     self.selected = math.max(1, math.min(self.selected, totalRows()))
     setHint("Edit targets while mining continues in the background.")
   end
@@ -459,25 +462,42 @@ function editorModule.create(options)
         setHint(message)
       end
     elseif code == keyboard.keys.left then
+      edit.replaceOnType = false
       edit.cursor = math.max(0, edit.cursor - 1)
     elseif code == keyboard.keys.right then
+      edit.replaceOnType = false
       edit.cursor = math.min(#edit.buffer, edit.cursor + 1)
     elseif code == keyboard.keys.home then
+      edit.replaceOnType = false
       edit.cursor = 0
     elseif code == keyboard.keys["end"] then
+      edit.replaceOnType = false
       edit.cursor = #edit.buffer
     elseif code == keyboard.keys.back then
-      if edit.cursor > 0 then
+      if edit.replaceOnType then
+        edit.buffer = ""
+        edit.cursor = 0
+        edit.replaceOnType = false
+      elseif edit.cursor > 0 then
         edit.buffer = edit.buffer:sub(1, edit.cursor - 1) ..
                       edit.buffer:sub(edit.cursor + 1)
         edit.cursor = edit.cursor - 1
       end
     elseif code == keyboard.keys.delete then
-      if edit.cursor < #edit.buffer then
+      if edit.replaceOnType then
+        edit.buffer = ""
+        edit.cursor = 0
+        edit.replaceOnType = false
+      elseif edit.cursor < #edit.buffer then
         edit.buffer = edit.buffer:sub(1, edit.cursor) ..
                       edit.buffer:sub(edit.cursor + 2)
       end
     elseif char and char >= 32 and char <= 126 then
+      if edit.replaceOnType then
+        edit.buffer = ""
+        edit.cursor = 0
+        edit.replaceOnType = false
+      end
       local inserted = string.char(char)
       edit.buffer = edit.buffer:sub(1, edit.cursor) .. inserted ..
                     edit.buffer:sub(edit.cursor + 1)
@@ -485,63 +505,73 @@ function editorModule.create(options)
     end
   end
 
-  function editor:handleEvent(eventName, ...)
+  function editor:handleKey(char, code)
     if not self.active then return nil end
-    local args = { ... }
-
-    if eventName == "key_down" then
-      local char, code = args[2], args[3]
-      if self.edit and keyboard.isControlDown() and code == keyboard.keys.s then
-        local activeEdit = self.edit
-        local committed, message = activeEdit.commit(activeEdit.buffer)
-        if committed then
-          self.edit = nil
-          save()
-        else
-          setHint(message)
-        end
-      elseif self.edit then
-        handleEditKey(char, code)
-      elseif keyboard.isControlDown() then
-        if code == keyboard.keys.s then save()
-        elseif code == keyboard.keys.r then reload()
-        elseif code == keyboard.keys.w then
-          if requestClose() then return "closed" end
-        end
-      elseif code == ESC_KEY then
-        if requestClose() then return "closed" end
-      elseif code == keyboard.keys.up then
-        self.selected = (self.selected - 2) % totalRows() + 1
-        self.confirmClose = false
-      elseif code == keyboard.keys.down then
-        self.selected = self.selected % totalRows() + 1
-        self.confirmClose = false
-      elseif code == keyboard.keys.pageUp then
-        self.selected = math.max(1, self.selected - 10)
-      elseif code == keyboard.keys.pageDown then
-        self.selected = math.min(totalRows(), self.selected + 10)
-      elseif code == keyboard.keys.home then
-        self.selected = 1
-      elseif code == keyboard.keys["end"] then
-        self.selected = totalRows()
-      elseif code == keyboard.keys.space then
-        toggleSelectedItem()
-      elseif code == keyboard.keys.enter or code == keyboard.keys.numpadenter then
-        beginSelectedEdit()
-      end
-    elseif eventName == "touch" then
-      local y = args[3]
-      if y >= 5 and y <= 9 then
-        self.selected = y - 4
-      elseif y >= 12 then
-        local index = self.scroll + (y - 11)
-        if index >= 1 and index <= #itemNames then
-          self.selected = GLOBAL_ROWS + index
-        end
-      end
-      self.confirmClose = false
+    if code == keyboard.keys.lcontrol or code == keyboard.keys.rcontrol then
+      self.controlDown = true
+      return nil
     end
 
+    local controlDown = self.controlDown or keyboard.isControlDown()
+    if self.edit and controlDown and code == keyboard.keys.s then
+      local activeEdit = self.edit
+      local committed, message = activeEdit.commit(activeEdit.buffer)
+      if committed then
+        self.edit = nil
+        save()
+      else
+        setHint(message)
+      end
+    elseif self.edit then
+      handleEditKey(char, code)
+    elseif controlDown then
+      if code == keyboard.keys.s then save()
+      elseif code == keyboard.keys.r then reload()
+      elseif code == keyboard.keys.w then
+        if requestClose() then return "closed" end
+      end
+    elseif code == ESC_KEY then
+      if requestClose() then return "closed" end
+    elseif code == keyboard.keys.up then
+      self.selected = (self.selected - 2) % totalRows() + 1
+      self.confirmClose = false
+    elseif code == keyboard.keys.down then
+      self.selected = self.selected % totalRows() + 1
+      self.confirmClose = false
+    elseif code == keyboard.keys.pageUp then
+      self.selected = math.max(1, self.selected - 10)
+    elseif code == keyboard.keys.pageDown then
+      self.selected = math.min(totalRows(), self.selected + 10)
+    elseif code == keyboard.keys.home then
+      self.selected = 1
+    elseif code == keyboard.keys["end"] then
+      self.selected = totalRows()
+    elseif code == keyboard.keys.space then
+      toggleSelectedItem()
+    elseif code == keyboard.keys.enter or code == keyboard.keys.numpadenter then
+      beginSelectedEdit()
+    end
+
+    return nil
+  end
+
+  function editor:handleKeyUp(code)
+    if code == keyboard.keys.lcontrol or code == keyboard.keys.rcontrol then
+      self.controlDown = false
+    end
+  end
+
+  function editor:handleTouch(_, y)
+    if not self.active then return nil end
+    if y >= 5 and y <= 9 then
+      self.selected = y - 4
+    elseif y >= 12 then
+      local index = self.scroll + (y - 11)
+      if index >= 1 and index <= #itemNames then
+        self.selected = GLOBAL_ROWS + index
+      end
+    end
+    self.confirmClose = false
     return nil
   end
 

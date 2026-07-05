@@ -861,29 +861,56 @@ end
 local UI_INTERVAL = 0.25          -- seconds between full UI repaints
 local lastUIDraw  = 0
 
-while true do
-  -- 1. Service one inbound message. Very short timeout: returns immediately if a
-  --    message is waiting, otherwise yields the CPU for ~10ms and comes back so
-  --    the scheduler keeps ticking fast.
-  local ev = { event.pull(0.01) }
+-- Normalize raw OC signals in one place. key_down is:
+--   name, keyboardAddress, character, scanCode, playerName
+-- and touch is:
+--   name, screenAddress, x, y, button, playerName
+-- Returns true when the editor should be redrawn immediately.
+local function handleLoopEvent(ev)
+  if not ev[1] then return false end
+
   if ev[1] == "interrupted" then
     error("interrupted", 0)
   elseif ev[1] == "modem_message" then
     processMessage(table.unpack(ev))
-  elseif targetEditor and targetEditor:isOpen() and
-         (ev[1] == "key_down" or ev[1] == "touch") then
-    local editorResult = targetEditor:handleEvent(table.unpack(ev))
+  elseif targetEditor and targetEditor:isOpen() and ev[1] == "key_down" then
+    local editorResult = targetEditor:handleKey(ev[3], ev[4])
     if editorResult == "closed" then
       drawStaticFrame()
       lastUIDraw = 0
+      return false
     end
+    return true
+  elseif targetEditor and targetEditor:isOpen() and ev[1] == "key_up" then
+    targetEditor:handleKeyUp(ev[4])
+  elseif targetEditor and targetEditor:isOpen() and ev[1] == "touch" then
+    targetEditor:handleTouch(ev[3], ev[4])
+    return true
   elseif targetEditor and ev[1] == "key_down" then
     local char, code = ev[3], ev[4]
     if code == keyboard.keys.t or code == keyboard.keys.f4 or
        char == string.byte("t") or char == string.byte("T") then
       targetEditor:open()
-      targetEditor:draw()
+      return true
     end
+  end
+
+  return false
+end
+
+while true do
+  -- 1. Wait briefly for one signal, then drain a bounded batch of already
+  --    queued signals. Telemetry bursts can no longer leave keyboard input
+  --    sitting behind one-event-per-loop processing.
+  local editorNeedsRedraw = handleLoopEvent({ event.pull(0.01) })
+  for _ = 1, 31 do
+    local queued = { event.pull(0) }
+    if not queued[1] then break end
+    if handleLoopEvent(queued) then editorNeedsRedraw = true end
+  end
+  if editorNeedsRedraw and targetEditor and targetEditor:isOpen() then
+    targetEditor:draw()
+    lastUIDraw = computer.uptime()
   end
 
   -- 2. Advance every in-flight load task. This is the hot path — runs every
