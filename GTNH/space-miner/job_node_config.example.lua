@@ -8,7 +8,7 @@
 --
 --   nodeId   : a name for this node (any string)
 --   dbAddr   : the SHARED OC Database. Each module uses 3 slots:
---              M1 -> 1/2/3, M2 -> 4/5/6, ... A 25-slot DB covers 6 modules;
+--              M1 -> 1/2/3, M2 -> 4/5/6, ... A 25-slot DB covers 8 modules;
 --              an 81-slot MK3 DB covers up to 27.
 --
 -- Per module:

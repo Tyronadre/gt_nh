@@ -14,10 +14,9 @@
 --   lokiHost = "127.0.0.1" -- only used when backend == "loki"
 --   lokiPort = 3100
 --
--- DEFAULT BEHAVIOR (enabled = false): writes ERROR and WARN lines to the log
--- file only — quiet on screen, no network — so a fresh install still records
--- failures you can read at /tmp/spacemining.log. Set enabled = true to also
--- capture INFO/DEBUG and to use the loki/console backends.
+-- DEFAULT BEHAVIOR (enabled = false): retains all levels in a bounded in-memory
+-- ring for the broker's L-key viewer, and writes ERROR/WARN to the log file.
+-- Set enabled = true to persist INFO/DEBUG or use loki/console backends.
 --
 -- The file lives on OpenComputers' /tmp (a small RAM disk wiped on reboot), so
 -- we cap its size to avoid filling the disk on a long run.
@@ -37,6 +36,7 @@ local MAXBYTES  = L.maxFileBytes or 65536
 local LOKI_HOST = L.lokiHost or "127.0.0.1"
 local LOKI_PORT = L.lokiPort or 3100
 local LOKI_URL  = "http://" .. LOKI_HOST .. ":" .. LOKI_PORT .. "/loki/api/v1/push"
+local RING_SIZE = math.max(20, tonumber(L.ringSize) or 250)
 
 -- ---------------------------------------------------------------------------
 -- Timestamp: seconds since boot anchored to an approximate wall time. Without an
@@ -105,10 +105,17 @@ end
 
 local function createLogger(jobName)
   local logger = {}
+  local recent = {}
 
   local function emit(level, message)
-    if not shouldEmit(level) then return end
     local line = "[" .. isoTime() .. "] [" .. jobName .. "] [" .. level .. "] " .. tostring(message)
+
+    -- Always retain a bounded current-session history for the in-game viewer,
+    -- even when persistent INFO/DEBUG logging is disabled.
+    recent[#recent + 1] = { level = level, text = line }
+    if #recent > RING_SIZE then table.remove(recent, 1) end
+
+    if not shouldEmit(level) then return end
 
     if ENABLED and BACKEND == "loki" then
       sendLoki(jobName, level, line)
@@ -123,6 +130,18 @@ local function createLogger(jobName)
   function logger:warn(m)  emit("WARN",  m) end
   function logger:error(m) emit("ERROR", m) end
   function logger:debug(m) emit("DEBUG", m) end
+
+  function logger:getRecent()
+    local copy = {}
+    for index, entry in ipairs(recent) do
+      copy[index] = { level = entry.level, text = entry.text }
+    end
+    return copy
+  end
+
+  function logger:clearRecent()
+    recent = {}
+  end
 
   return logger
 end

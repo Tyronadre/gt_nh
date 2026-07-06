@@ -1,8 +1,8 @@
 -- =============================================================================
 -- MEDINA LOADER  (v1.5)
 -- Loads one mining module's consumables (drone + drill tip + drill rod) from the
--- ME network into its input bus. Designed to run as a scheduler TASK, so six of
--- these can be in flight at once without freezing the broker.
+-- ME network into its input bus. Designed to run as a scheduler TASK, so every
+-- configured module can have a load in flight without freezing the broker.
 --
 -- HARDWARE MODEL (this is why the code looks the way it does):
 --   - Each module has its OWN ME interface adapter, transposer, and input bus.
@@ -162,6 +162,17 @@ function loader.run(mod, job, deps)
   --    interface may place items in slots other than 1/2/3, so we search by
   --    identity. The actual slot is resolved again at transfer time.
   local ibufSize = mod.transposer.getInventorySize(mod.conf.interfaceSide) or 9
+  local function bufferAmount(label)
+    local amount = 0
+    for s = 1, ibufSize do
+      local stack = mod.transposer.getStackInSlot(mod.conf.interfaceSide, s)
+      if stack and stack.label == label then
+        amount = amount + (stack.size or 0)
+      end
+    end
+    return amount
+  end
+
   local function bufferHas(label, minSize)
     for s = 1, ibufSize do
       local stack = mod.transposer.getStackInSlot(mod.conf.interfaceSide, s)
@@ -181,9 +192,12 @@ function loader.run(mod, job, deps)
 
   if not arrived then
     clearInterfaceSlots(mod)
-    return false, "items did not arrive: drone=" .. tostring(bufferHas(droneName, 1)) ..
-                  " tip=" .. tostring(bufferHas(drillEntry.tip, TIPS_PER)) ..
-                  " rod=" .. tostring(bufferHas(drillEntry.rod, RODS_PER))
+    return false, "interface stock timeout after " .. ARRIVE_TIMEOUT ..
+                  "s: drone " .. bufferAmount(droneName) .. "/1 (" .. droneName ..
+                  "), tip " .. bufferAmount(drillEntry.tip) .. "/" .. TIPS_PER ..
+                  " (" .. drillEntry.tip .. "), rod " ..
+                  bufferAmount(drillEntry.rod) .. "/" .. RODS_PER ..
+                  " (" .. drillEntry.rod .. ")"
   end
 
   -- 5. Move items into the input bus by IDENTITY, not by slot position.

@@ -1,8 +1,8 @@
 # MEDINA — Modular Extraction and Dispatch Intelligence Network Array
 
-Automated wireless mining system for the GTNH Space Elevator. Monitors dust storage levels across your ME network, selects asteroids to target by priority, and loads consumables to drive up to 6 Mining Modules in parallel — all from a single consolidated **Broker MK3** computer.
+Automated wireless mining system for the GTNH Space Elevator. Monitors dust storage levels across your ME network, selects asteroids to target by priority, and loads consumables for every configured Mining Module in parallel — all from a single consolidated **Broker MK3** computer.
 
-**Current version: v1.5 (Broker MK3).** A cooperative task scheduler loads all 6 modules concurrently without blocking, achieving ~10× the throughput of the earlier blocking design. The broker dispatches based on telemetry from **three required monitor nodes** — dust (what to mine), hardware (drones/drill kits), and fluid (plasma). It won't start mining until all three report, because mining modules physically require a plasma fluid to operate.
+**Current version: v1.5 (Broker MK3).** A cooperative task scheduler loads all configured modules concurrently without blocking. The broker dispatches based on telemetry from **three required monitor nodes** — dust (what to mine), hardware (drones/drill kits), and fluid (plasma). It won't start mining until all three report, because mining modules physically require a plasma fluid to operate.
 
 ---
 
@@ -13,11 +13,11 @@ Automated wireless mining system for the GTNH Space Elevator. Monitors dust stor
   dust_telem  ──────────►│   BROKER MK3  (port 2026 in)    │
   fluid_telem ──────────►│                                 │
   hw_telem    ──────────►│   cooperative scheduler:        │──► M1 ┐
-  (dust+hw required)     │   • dispatch (drone-first)      │──► M2 │ up to 6
+  (dust+hw required)     │   • dispatch (drone-first)      │──► M2 │ configured
                          │   • 6 concurrent load tasks     │──► M3 │ Mining
                          │   • read-back item confirmation │──► M4 │ Modules
                          │   • 3×2 T3 screen dashboard     │──► M5 │ (local)
-                         └─────────────────────────────────┘──► M6 ┘
+                         └─────────────────────────────────┘──► MN ┘
 ```
 
 Each module has its own ME Interface adapter + transposer; one shared OC Database (slots partitioned per module) holds item fingerprints. Telemetry nodes broadcast on port 2026 (strength 400). The broker drives its modules directly — no separate job-node RPC in the single-broker setup.
@@ -33,7 +33,7 @@ Each module has its own ME Interface adapter + transposer; one shared OC Databas
 | `target_editor.lua` | dust node + broker | Integrated target-editor UI and safe config persistence module. |
 | `target_editor_app.lua` | optional editor computer | Retained as an alternative standalone UI. |
 | `broker-mk3.lua` | broker | **The broker.** Aggregates telemetry, dispatches jobs (drone-first with a per-asteroid cap), and spawns one cooperative load task per module. Requires `/home/job_node_config.lua`, `/home/scheduler.lua`, `/home/loader.lua`, `/home/target_editor.lua`, `/home/logger.lua`. |
-| `scheduler.lua` | broker | Cooperative task engine: `spawn`, `sleep`, `await`, fair `lock`. One clock (`computer.uptime`). Lets all 6 loads run concurrently without freezing the UI/telemetry. You never edit this to add features — you spawn a task. |
+| `scheduler.lua` | broker | Cooperative task engine: `spawn`, `sleep`, `await`, fair `lock`. One clock (`computer.uptime`). Lets configured loads run concurrently without freezing the UI/telemetry. |
 | `loader.lua` | broker | One module's consumable-load sequence, run as a scheduler task. Confirms database fingerprints by read-back and routes items into the input bus by identity (not slot position). |
 | `logger.lua` | broker | Logging with a configurable backend (file / console / Loki). Disabled by default — ERROR/WARN still written to `/tmp/spacemining.log`. Configure under `config.logging`. |
 | `dust_telem.lua` | dust node **(required)** | Queries the dust-storage ME subnet every 10 s; broadcasts all known mineable item stocks in bounded chunks. Broker won't dispatch without it. |
@@ -50,20 +50,20 @@ Each module has its own ME Interface adapter + transposer; one shared OC Databas
 **Hardware:**
 - T2 wireless card (port 2026 in for telemetry)
 - T3 GPU + **2 tall × 3 wide T3 screen array**
-- **OC Database** — shared consumable storage, partitioned 3 slots per module (M1→1-3, M2→4-6, …). A tier-2 (25-slot) DB covers 6 modules; an MK3 (81-slot) DB covers up to 27.
+- **OC Database** — shared consumable storage, partitioned 3 slots per module (M1→1-3, M2→4-6, …). A tier-2 (25-slot) DB covers 8 modules; an MK3 (81-slot) DB covers up to 27.
 - **Per-module:** OC Adapter on Mining Module, OC Adapter on ME Interface, Transposer between the interface buffer and the input bus
 
 **Key features:**
-1. **Concurrent cooperative loading.** Each module's load runs as a scheduler task (`scheduler.lua` + `loader.lua`). All 6 load at once; the broker never blocks — UI and telemetry stay live throughout. No stagger, no fixed delays.
+1. **Concurrent cooperative loading.** Each module's load runs as a scheduler task (`scheduler.lua` + `loader.lua`). All configured modules can load concurrently; the broker never blocks — UI and telemetry stay live throughout. No stagger, no fixed delays.
 2. **Self-pacing via read-back.** After writing a fingerprint with `iface.store`, the loader polls `db.get(slot)` until the fingerprint is confirmed, then proceeds — instant when the server is fast, patient when it lags. Replaces guessed sleep constants.
 3. **Identity-based item routing.** Items are moved into the input bus by matching their label in the interface buffer, not by trusting slot positions (the ME interface can shuffle buffer slots under load). Each load is verified before the machine is enabled; a bad load ERRORs and auto-recovers in ~10 s rather than running wrong.
 4. **Drone-first dispatch with a per-asteroid cap.** Uses the highest-tier available drones first, but no single asteroid may hold more than `floor(totalModules / 2) + 1` modules — so a high-tier target (e.g. Infinity Catalyst) can't starve lower-tier needs. Availability pools subtract drones/kits already committed to busy modules, preventing double-assignment.
 5. **Priority-mode boot prompt.** At startup, choose *Threshold* (mine the lowest stock/target ratio first) or *Rarity* (highest dust-priority first, then ratio).
 6. **Dust-node target editor.** Press `T` on the dust monitor to pause its telemetry loop and give the editor exclusive control of input/rendering. Closing the editor immediately resumes telemetry and publishes the saved targets to the broker on the already-established port 2026 path.
 
-**Throughput:** all 6 modules load in ~1–2 s each and mine in parallel. Measured ~9.4× the earlier blocking design (≈100k → ≈938k Infinity Catalyst dust/hr), confirmed stable over a 12-hour soak test.
+**Throughput:** the six-module benchmark loaded each module in ~1–2 s and measured ~9.4× the earlier blocking design (≈100k → ≈938k Infinity Catalyst dust/hr), confirmed stable over a 12-hour soak test. Six was the benchmark size, not a software limit.
 
-**Logging:** via `logger.lua`, configured under `config.logging` (default off; ERROR/WARN still written to `/tmp/spacemining.log`). Backends: `file` (default), `console`, or `loki` if you run Grafana Loki. Each load reports read-back poll counts (`confirm polls d=N t=N r=N, arrive=N`); consistently low counts indicate `store()` is reliable on your setup. The UI also shows a per-module `loaded Xs db:N buf:N` diagnostic.
+**Logging:** press **L** on the broker to open the in-game current-session log. It retains INFO/DEBUG/WARN/ERROR in a bounded memory ring even when persistent logging is disabled; use arrows or Page Up/Down to scroll and **L/Esc** to close. `config.logging.ringSize` controls its size. ERROR/WARN still go to `/tmp/spacemining.log`; optional persistent backends are `file`, `console`, and `loki`. Module failures show their stage and concrete loader/component error directly in the module panel.
 
 **Stopping the broker:** break the script in the OC console with **Ctrl+Alt+C**.
 
@@ -276,7 +276,7 @@ Module panel shows each module's state, its job's distance/drone, and the per-lo
 
 ### `job_node.lua` — Mining Module Worker
 
-**Hardware (shared per node):** T2 wireless card · OC Database component (tier 2, 25 slots — covers all 6 modules) · optional GPU + screen
+**Hardware (shared per node):** T2 wireless card · OC Database component (tier 2, 25 slots — covers 8 modules) · optional GPU + screen
 
 **Hardware per module slot:** OC Adapter on Mining Module · OC Adapter on ME Interface · OC Transposer between ME Interface buffer and Input Bus
 
@@ -288,7 +288,7 @@ On first run, auto-generates `/home/job_node_config.lua` with full comments and 
 
 | Field | Description |
 |-------|-------------|
-| `dbAddr` | Shared OC Database component address. Tier 2 (25 slots) covers 6 modules. Each module uses 3 slots: M1→1-3, M2→4-6 … M6→16-18. |
+| `dbAddr` | Shared OC Database component address. Tier 2 (25 slots) covers 8 modules; Tier 3 (81 slots) covers 27. Each module uses three consecutive slots. |
 
 **Per-module config fields:**
 
@@ -410,7 +410,14 @@ reply is required.
 
 ### 5. Multi-node fleets (future / optional)
 
-The single broker is limited by the host computer's component budget (≈6 modules on a typical bus; far more on a creative component bus). The shared database caps the fleet at **27 modules** (81 slots ÷ 3). To scale past one broker's component limit, `job_node.lua` can run remote workers on additional computers — each driving its own modules and partitioning into the shared database. This is the path back toward the multi-elevator architecture; the per-asteroid cap already scales with total module count.
+The broker has **no hard-coded six-module limit**. It iterates the complete
+`job_node_config.lua` module list, creates one load task per busy module, and
+calculates dispatch caps from the actual module count. Twelve local modules are
+valid when the OC network exposes their components and the shared database has
+at least 36 slots. The practical limits are component connectivity, three
+database slots per module, and display space; a Tier 3 81-slot database supports
+up to 27 modules. Remote `job_node.lua` workers remain an optional way to spread
+component load across computers.
 
 ---
 
@@ -455,4 +462,4 @@ The single broker is limited by the host computer's component budget (≈6 modul
 - **Ore → dust pipeline** — the broker triggers on dust levels, not ore. Ore outputs to an ore-processing subnet, then dusts arrive in the dust-storage subnet where `dust_telem` is watching. `pipelineCheckDelay` (default 30 s) is the cooldown the broker waits after a job completes before re-checking — tune this to your ore factory throughput.
 - **Draconic Core** — always capped at 1 parallel regardless of module tier due to its 7.8 M EU/t draw per parallel. The broker enforces this automatically.
 - **Distances > 200** — some entries in the optimization matrix are `201`+ (optimizer result exceeded the valid range). The broker clamps all dispatched distances to 200.
-- **Component budget** — 6 modules × 3 components (module adapter + ME Interface adapter + transposer) = 18 + ~4 overhead (modem, GPU, database, computer) = 22 of the 32 OC component limit per computer.
+- **Component budget** — each module adds three visible components (module adapter, ME Interface adapter, transposer). This is a hardware/network limit, not a broker limit. If your OC component network exposes all 36 module components for 12 modules, MEDINA will use all 12.

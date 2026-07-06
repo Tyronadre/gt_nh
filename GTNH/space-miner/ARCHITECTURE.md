@@ -4,7 +4,7 @@
 
 MEDINA (Modular Extraction and Dispatch Intelligence Network Array) is a wireless automation system for GTNH Space Elevator mining.
 
-**v1.5 (Current) — Broker MK3:** A single consolidated broker computer handles dispatch AND consumable loading for up to 6 local Mining Modules. A small **cooperative task scheduler** (`scheduler.lua`) runs each module's load as a coroutine, so all 6 load concurrently while the UI and telemetry stay live. Loads are self-pacing (database fingerprints confirmed by read-back) and route items by identity rather than slot position. Measured ~9.4× the throughput of the earlier blocking design (~100k → ~938k Infinity Catalyst dust/hr), validated over a 12-hour soak test.
+**v1.5 (Current) — Broker MK3:** A single consolidated broker computer handles dispatch and consumable loading for every locally configured Mining Module. A small **cooperative task scheduler** (`scheduler.lua`) runs each module's load as a coroutine, so loads progress concurrently while the UI and telemetry stay live. The six-module benchmark measured ~9.4× the throughput of the earlier blocking design; six is not a software cap.
 
 **Evolution:** v0.x separated broker (dispatch) and job_node (consumables) across computers. v1.0 (Broker MK2) consolidated them but loaded modules sequentially with blocking sleeps, freezing the broker during each load. v1.5 (Broker MK3) keeps the consolidation but makes loading concurrent and non-blocking. The optional `job_node.lua` remote-worker path is retained for future multi-node fleets (the shared 81-slot MK3 database caps a fleet at 27 modules).
 
@@ -75,7 +75,7 @@ MEDINA (Modular Extraction and Dispatch Intelligence Network Array) is a wireles
          │  │  └─────────────────────────────────────┘   │  │
          │  │                                            │  │
          │  │  ┌─────────────────────────────────────┐   │  │
-         │  │  │ ... up to 6 modules per node        │   │  │
+         │  │  │ ... all configured modules          │   │  │
          │  │  └─────────────────────────────────────┘   │  │
          │  │                                            │  │
          │  │ HW CONNECTIONS:                            │  │
@@ -103,7 +103,7 @@ MEDINA (Modular Extraction and Dispatch Intelligence Network Array) is a wireles
 
 ### Broker Node (broker-mk3.lua)
 
-**Purpose:** Central controller. Aggregates telemetry, selects mining targets, and drives up to 6 local Mining Modules — dispatching jobs and loading their consumables in one process.
+**Purpose:** Central controller. Aggregates telemetry, selects mining targets, and drives every local module listed in `job_node_config.lua`.
 
 **Hardware:**
 - Tier 2 Wireless Network Card (strength 400)
@@ -117,6 +117,10 @@ MEDINA (Modular Extraction and Dispatch Intelligence Network Array) is a wireles
 - `target_editor_app.lua` — optional legacy standalone editor
 - `loader.lua` — per-module load sequence, run as a task; read-back confirmation + identity-based item routing
 - `logger.lua` — configurable logging (file / console / Loki); disabled by default, ERROR/WARN to `/tmp/spacemining.log`
+
+The broker's **L** key opens a non-blocking current-session log overlay backed
+by the logger's bounded memory ring. Scheduler, telemetry, and module lifecycle
+work continue while the overlay is visible.
 
 **Network:**
 - **Inbound (Port 2026):** telemetry plus remote target-editor requests
@@ -224,7 +228,7 @@ interactive stock-target editor.
 
 ### Job Nodes (job_node.lua × N)
 
-**Purpose:** Receive mining jobs from broker, load consumables from ME network, execute mining recipes on up to 6 Mining Modules, recover output.
+**Purpose:** Receive mining jobs from broker, load consumables from ME network, execute mining recipes on its configured modules, and recover output.
 
 **Hardware per Job Node:**
 - Tier 2 Wireless Network Card
@@ -392,7 +396,10 @@ All mining parameters are defined in `config.lua`:
 
 ## Scaling Considerations
 
-- **Job Nodes:** Add more job node instances to mine asteroids in parallel. Each node can control up to 6 modules but shares ME/transposer hardware, so throughput scales with the transposer speed and item loading latency.
+- **Module count:** Broker code has no fixed six-module limit. The practical
+  bounds are visible component capacity and three database slots per module.
+  Twelve local modules require 36 database slots; an 81-slot database supports
+  27. Optional job nodes can distribute component load across computers.
 - **Telemetry Nodes:** Multiple instances of dust_telem, hw_telem, or fluid_telem can exist for redundancy. Broker aggregates the latest update from each sender.
 - **Wireless Range:** All nodes must be within 400 blocks (configurable via `modem.setStrength()`). Extend range or add relay nodes if needed.
 - **ME Network:** All job nodes must have access to the same ME Controller for drone and drill sourcing. Plasma is hardware-direct (no network required).

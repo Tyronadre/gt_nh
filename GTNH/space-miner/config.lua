@@ -912,14 +912,15 @@ config.pipelineCheckDelay = 30
 -- LOGGING (see logger.lua)
 -- Disabled by default: ERROR/WARN lines still go to the log file so you can
 -- diagnose problems, but nothing spams the screen and nothing hits the network.
--- Set enabled = true to also capture INFO/DEBUG, or to use the loki/console
--- backends.
+-- The broker's L-key viewer always retains recent entries in memory. Set
+-- enabled = true to also persist INFO/DEBUG, or to use loki/console backends.
 -- ---------------------------------------------------------------------------
 config.logging = {
   enabled      = false,                 -- master switch
   backend      = "file",                -- "file" | "console" | "loki"
   file         = "/tmp/spacemining.log",
   maxFileBytes = 65536,                 -- log file is capped at this size
+  ringSize     = 250,                   -- current-session entries shown by L
   -- Only used when backend == "loki":
   lokiHost     = "127.0.0.1",
   lokiPort     = 3100,

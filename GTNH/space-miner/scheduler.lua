@@ -122,11 +122,13 @@ function scheduler.spawn(fn, name)
     cond = nil,      -- await predicate, if any
     deadline = nil,  -- await timeout absolute uptime
     dead = false,
+    error = nil,     -- coroutine error when the task crashed
   }
   nextId = nextId + 1
   tasks[#tasks + 1] = task
   return {
     done = function() return task.dead end,
+    error = function() return task.error end,
     name = task.name,
   }
 end
@@ -188,6 +190,7 @@ local function step(task)
   if not ok then
     -- Task crashed.
     task.dead = true
+    task.error = yielded
     if scheduler.onError then
       pcall(scheduler.onError, task.name, yielded)
     end

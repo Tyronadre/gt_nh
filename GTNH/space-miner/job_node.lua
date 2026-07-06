@@ -1,6 +1,6 @@
 -- =============================================================================
 -- File:    job_node.lua
--- Purpose: Runs on each distributed mining computer. Controls up to 6 Space
+-- Purpose: Runs on each distributed mining computer. Controls configured Space
 --          Elevator Mining Modules. Self-registers with the MEDINA broker,
 --          receives job assignments, loads consumables, runs modules, and
 --          reports completion.
@@ -10,7 +10,7 @@
 --
 -- Hardware required per node:
 --   Shared:  T2 Wireless Network Card
---            OC Database component (tier 2 recommended, 25 slots covers 6 modules)
+--            OC Database component (25 slots cover 8 modules)
 --   Per module:
 --            OC Adapter adjacent to the Mining Module controller block
 --            OC Adapter adjacent to the ME Interface
@@ -52,7 +52,7 @@ if not fs.exists(CONFIG_PATH) then
 -- Run  component.list()  in the OC Lua console to find addresses.
 --
 -- SHARED HARDWARE
---   dbAddr         OC Database component (tier 2 = 25 slots, supports 6 modules).
+--   dbAddr         OC Database component (tier 2 = 25 slots, supports 8 modules).
 --                  One database serves the whole node. Each module uses 3 slots:
 --                    M1 -> slots 1-3,  M2 -> slots 4-6,  M3 -> slots 7-9
 --                    M4 -> slots 10-12, M5 -> slots 13-15, M6 -> slots 16-18
@@ -87,7 +87,7 @@ return {
       inputBusSide   = 1,
       distanceParam  = 0,
     },
-    -- Copy the block above for each additional module slot (up to 6 total)
+    -- Copy the block above for each additional module slot. Each uses 3 DB slots.
   }
 }
 ]])

@@ -4,8 +4,8 @@
 -- loading, all on one computer.
 --
 -- WHAT'S NEW vs MK2:
---   - Loads run as cooperative TASKS (see scheduler.lua + loader.lua), so all six
---     modules load concurrently and the UI / telemetry NEVER freeze.
+--   - Loads run as cooperative TASKS (see scheduler.lua + loader.lua), so all
+--     configured modules load concurrently and the UI / telemetry stay live.
 --   - The 10-second per-module stagger is GONE. Loads are self-pacing: each one
 --     confirms its database fingerprints by read-back (db.get) instead of sleeping
 --     a fixed guess. Fast when the server is fast, patient when it lags.
@@ -25,6 +25,7 @@
 local component = require("component")
 local serial    = require("serialization")
 local event     = require("event")
+local keyboard  = require("keyboard")
 local term      = require("term")
 local fs        = require("filesystem")
 local computer  = require("computer")
@@ -100,7 +101,18 @@ for i, mc in ipairs(nodeConf.modules) do
     doneTime   = nil,
     loadHandle = nil,     -- scheduler task handle while LOADING
     loadResult = nil,     -- set by the load task: { ok=bool, err=?, stats=? }
+    lastError  = nil,     -- full user-facing reason for the latest failure
+    errorStage = nil,
   }
+end
+logger:info(string.format(
+  "[STARTUP] Configured %d modules; database slots 1-%d required",
+  #modules, #modules * 3))
+if #modules > 0 then
+  local slotOk, slotError = pcall(db.get, #modules * 3)
+  assert(slotOk, "Database cannot address slot " .. (#modules * 3) ..
+                 " required by " .. #modules .. " modules: " ..
+                 tostring(slotError))
 end
 
 -- (Modules are disabled/cleared after the dashboard frame is drawn, so boot
@@ -143,7 +155,7 @@ local PW = P2 - 2
 
 local DISPATCH_INTERVAL = 0.2
 local lastDispatchCheck = 0
-local ERROR_TIMEOUT = 10
+local ERROR_TIMEOUT = 10 -- real seconds; keep detailed errors visible before retry
 local lastErrorTime = {}
 
 local function applyRuntimeTargets(targetSettings)
@@ -188,23 +200,44 @@ local function getOptimalDistance(moduleTier, asteroid, droneKey)
   return 50
 end
 
+local function setModuleError(mod, stage, reason)
+  mod.status = "ERROR"
+  mod.errorStage = stage or "unknown"
+  mod.lastError = tostring(reason or "unknown error")
+  lastErrorTime[mod.index] = computer.uptime()
+  logger:error(string.format(
+    "[MODULE] M%d %s failed during %s: %s",
+    mod.index,
+    mod.job and ("(" .. tostring(mod.job.asteroid) .. ")") or "",
+    mod.errorStage,
+    mod.lastError))
+end
+
 -- Spawn a cooperative load task for a module. The task runs concurrently with
 -- every other module's load AND with the UI/telemetry loop.
 local function beginLoad(mod)
   mod.loadResult = nil
   mod.loadStart = computer.uptime()  -- real seconds, for elapsed readout
   mod.loadHandle = sched.spawn(function()
-    local ok, errOrStats = loader.run(mod, mod.job, {
+    local loadOk, result = loader.run(mod, mod.job, {
       config = config, logger = logger, db = db, dbAddr = dbAddr,
     })
-    mod.loadResult = ok and { ok = true, stats = errOrStats }
-                        or  { ok = false, err = errOrStats }
+    mod.loadResult = loadOk and { ok = true, stats = result }
+                               or { ok = false, err = result }
   end, "load-M" .. mod.index)
 end
 
 -- Called each frame for a LOADING module: check whether its task finished.
 local function pollLoad(mod)
-  if not mod.loadResult then return end  -- still loading
+  if not mod.loadResult then
+    if mod.loadHandle and mod.loadHandle:done() then
+      local taskError = mod.loadHandle:error()
+      mod.loadHandle = nil
+      setModuleError(mod, "loader task crash",
+                     taskError or "task ended without returning a result")
+    end
+    return -- still loading, or crash was just converted into a module error
+  end
 
   local r = mod.loadResult
   mod.loadHandle = nil
@@ -225,13 +258,20 @@ local function pollLoad(mod)
       "[LOAD] M%d ready (confirm polls d=%s t=%s r=%s, arrive=%s)",
       mod.index, tostring(cp.drone), tostring(cp.tip), tostring(cp.rod),
       tostring(s.arrivePolls)))
-    mod.status = "RUNNING"
-    mod.job.startTime = os.time()
-    mod.adapter.setParameters(mod.conf.distanceParam, 0, mod.job.distance)
-    mod.adapter.setWorkAllowed(true)
+    local started, startError = pcall(function()
+      mod.adapter.setParameters(mod.conf.distanceParam, 0, mod.job.distance)
+      mod.adapter.setWorkAllowed(true)
+    end)
+    if started then
+      mod.status = "RUNNING"
+      mod.job.startTime = os.time()
+      mod.lastError = nil
+      mod.errorStage = nil
+    else
+      setModuleError(mod, "machine start", startError)
+    end
   else
-    mod.status = "ERROR"
-    logger:error("[LOAD] M" .. mod.index .. " failed: " .. tostring(r.err))
+    setModuleError(mod, "consumable load", r.err)
   end
 end
 
@@ -255,15 +295,20 @@ local function stepDone(mod)
     mod.job = nil
     mod.status = "IDLE"
     mod.doneTime = nil
-    lastDispatchCheck = os.time() - DISPATCH_INTERVAL
+    lastDispatchCheck = computer.uptime() - DISPATCH_INTERVAL
   end
 end
 
 local function stepModules()
   for _, mod in ipairs(modules) do
-    if     mod.status == "LOADING" then pollLoad(mod)
-    elseif mod.status == "RUNNING" then stepRunning(mod)
-    elseif mod.status == "DONE"    then stepDone(mod)
+    local ok, stepError = pcall(function()
+      if     mod.status == "LOADING" then pollLoad(mod)
+      elseif mod.status == "RUNNING" then stepRunning(mod)
+      elseif mod.status == "DONE"    then stepDone(mod)
+      end
+    end)
+    if not ok then
+      setModuleError(mod, "lifecycle " .. tostring(mod.status), stepError)
     end
   end
 end
@@ -313,19 +358,26 @@ end
 
 local function getIdleModules()
   local idle = {}
-  local now = os.time()
+  local now = computer.uptime()
   for i, mod in ipairs(modules) do
     if mod.status == "IDLE" then
       idle[#idle+1] = mod
     elseif mod.status == "ERROR" then
-      if not lastErrorTime[i] then
-        lastErrorTime[i] = now
-      elseif now - lastErrorTime[i] >= ERROR_TIMEOUT then
-        pcall(function() returnItemsToME(mod) end)
-        mod.status = "IDLE"; mod.job = nil; mod.doneTime = nil
-        lastErrorTime[i] = nil
-        logger:info("[RECOVERY] M" .. i .. " auto-recovered from ERROR state")
-        idle[#idle+1] = mod
+      if not lastErrorTime[i] then lastErrorTime[i] = now end
+      if now - lastErrorTime[i] >= ERROR_TIMEOUT then
+        local recovered, recoveryError = pcall(function()
+          returnItemsToME(mod)
+          clearInterfaceSlots(mod)
+          mod.adapter.setWorkAllowed(false)
+        end)
+        if recovered then
+          mod.status = "IDLE"; mod.job = nil; mod.doneTime = nil
+          lastErrorTime[i] = nil
+          logger:info("[RECOVERY] M" .. i .. " auto-recovered from ERROR state")
+          idle[#idle+1] = mod
+        else
+          setModuleError(mod, "error recovery", recoveryError)
+        end
       end
     end
   end
@@ -666,6 +718,19 @@ local function formatQty(n)
   else return tostring(n) end
 end
 
+local function wrapText(text, width)
+  local lines = {}
+  local remaining = tostring(text or "")
+  width = math.max(1, width)
+  if remaining == "" then return { "" } end
+  while #remaining > width do
+    lines[#lines + 1] = remaining:sub(1, width)
+    remaining = remaining:sub(width + 1)
+  end
+  lines[#lines + 1] = remaining
+  return lines
+end
+
 local function drawModulePanel()
   local row = 6
   local function clear(r) gpu.fill(P1 + 1, r, PW, 1, " ") end
@@ -681,13 +746,24 @@ local function drawModulePanel()
       io.write(string.format("  M%d [%-5s]  LOADING %s", mod.index, mod.tier, mod.job and mod.job.asteroid or ""))
     elseif mod.status == "ERROR" then
       gpu.setForeground(0xFF4444)
-      io.write(string.format("  M%d [%-5s]  ERROR", mod.index, mod.tier))
+      io.write(string.format("  M%d [%-5s]  ERROR: %s",
+        mod.index, mod.tier, mod.errorStage or "unknown"))
     else
       gpu.setForeground(0x555555)
       io.write(string.format("  M%d [%-5s]  IDLE", mod.index, mod.tier))
     end
     row = row + 1
-    if (mod.status == "RUNNING") and mod.job and row <= H then
+    if mod.status == "ERROR" and mod.lastError and row <= H then
+      local errorLines = wrapText(mod.lastError, math.max(10, PW - 4))
+      for index = 1, math.min(2, #errorLines) do
+        if row > H then break end
+        clear(row); term.setCursor(P1 + 3, row)
+        gpu.setForeground(0xCC6666)
+        io.write(errorLines[index])
+        row = row + 1
+      end
+      if row <= H then clear(row); row = row + 1 end
+    elseif (mod.status == "RUNNING") and mod.job and row <= H then
       clear(row); term.setCursor(P1 + 3, row)
       gpu.setForeground(0xCCCCCC)
       local droneName = config.drones[mod.job.droneKey] or "?"
@@ -878,8 +954,8 @@ local function drawStaticFrame()
   gpu.fill(1, 1, W, 1, "="); gpu.fill(1, 5, W, 1, "=")
   term.setCursor(2, 2); gpu.setForeground(0xFFFFFF); io.write("MEDINA BROKER MK3  (v1.5)")
   term.setCursor(2, 3); gpu.setForeground(0x666666)
-  io.write("TARGET CONFIG VIA DUST TELEMETRY: PORT " ..
-           config.ports.telemetry)
+  io.write(("TARGET CONFIG VIA DUST TELEMETRY: PORT " ..
+            config.ports.telemetry .. "   [L] LOGS"):sub(1, W - 2))
   term.setCursor(P1 + 1, 4); io.write("MODULES")
   term.setCursor(P2 + 1, 4); io.write("DUST STOCK")
   term.setCursor(P3 + 1, 4); io.write("HARDWARE")
@@ -895,6 +971,115 @@ local function drawUI()
   term.setCursor(W - 17, 2); gpu.setForeground(0x555555)
   io.write("SYNC: " .. os.date("%H:%M:%S", math.floor(getUnixTime())) .. "   ")
   drawModulePanel(); drawDustPanel(); drawHWPanel()
+end
+
+local logViewActive = false
+local logScroll = 0
+
+local function buildLogLines()
+  local lines = {}
+  local entries = logger.getRecent and logger:getRecent() or {}
+  for _, entry in ipairs(entries) do
+    local wrapped = wrapText(entry.text, math.max(10, W - 2))
+    for _, text in ipairs(wrapped) do
+      lines[#lines + 1] = { level = entry.level, text = text }
+    end
+  end
+  return lines, #entries
+end
+
+local function drawLogView()
+  if not gpu then return end
+  local lines, entryCount = buildLogLines()
+  local visible = math.max(1, H - 5)
+  local maxScroll = math.max(0, #lines - visible)
+  logScroll = math.max(0, math.min(logScroll, maxScroll))
+  local first = math.max(1, #lines - visible - logScroll + 1)
+  local last = math.min(#lines, first + visible - 1)
+
+  gpu.setBackground(0x000000)
+  gpu.fill(1, 1, W, H, " ")
+  gpu.setForeground(0x00FF00)
+  gpu.fill(1, 1, W, 1, "=")
+  term.setCursor(2, 2)
+  gpu.setForeground(0xFFFFFF)
+  io.write("MEDINA BROKER LOG  (" .. entryCount .. " entries)")
+  gpu.setForeground(0x555555)
+  local scrollStatus = "scroll +" .. logScroll .. " from newest"
+  term.setCursor(math.max(2, W - #scrollStatus - 1), 2)
+  io.write(scrollStatus)
+  gpu.fill(1, 3, W, 1, "-")
+
+  local row = 4
+  if #lines == 0 then
+    term.setCursor(2, row)
+    gpu.setForeground(0x777777)
+    io.write("No log entries in this broker session.")
+  else
+    for index = first, last do
+      local entry = lines[index]
+      term.setCursor(2, row)
+      if entry.level == "ERROR" then
+        gpu.setForeground(0xFF5555)
+      elseif entry.level == "WARN" then
+        gpu.setForeground(0xFFAA00)
+      elseif entry.level == "DEBUG" then
+        gpu.setForeground(0x777777)
+      else
+        gpu.setForeground(0xCCCCCC)
+      end
+      io.write(entry.text)
+      row = row + 1
+    end
+  end
+
+  gpu.fill(1, H, W, 1, " ")
+  term.setCursor(2, H)
+  gpu.setForeground(0x888888)
+  io.write(("[Up/Down] line  [PgUp/PgDn] page  " ..
+            "[Home/End] oldest/newest  [L/Esc] close"):sub(1, W - 2))
+end
+
+local function closeLogView()
+  logViewActive = false
+  logScroll = 0
+  drawStaticFrame()
+  drawUI()
+end
+
+local function handleBrokerKey(_, code)
+  if code == keyboard.keys.l then
+    if logViewActive then
+      closeLogView()
+    else
+      logViewActive = true
+      logScroll = 0
+      drawLogView()
+    end
+    return
+  end
+  if not logViewActive then return end
+
+  local visible = math.max(1, H - 5)
+  if code == keyboard.keys.up then
+    logScroll = logScroll + 1
+  elseif code == keyboard.keys.down then
+    logScroll = math.max(0, logScroll - 1)
+  elseif code == keyboard.keys.pageUp then
+    logScroll = logScroll + visible
+  elseif code == keyboard.keys.pageDown then
+    logScroll = math.max(0, logScroll - visible)
+  elseif code == keyboard.keys.home then
+    logScroll = math.huge
+  elseif code == keyboard.keys["end"] then
+    logScroll = 0
+  elseif code == keyboard.keys.esc or code == 1 then
+    closeLogView()
+    return
+  else
+    return
+  end
+  drawLogView()
 end
 
 -- Boot-time prompt: how should the broker prioritize what to mine?
@@ -944,12 +1129,15 @@ local function initModules()
       gpu.setForeground(0xFFFF00)
       io.write(string.format("  M%d [%-5s]  clearing...", mod.index, mod.tier))
     end
-    pcall(function()
+    local initialized, initError = pcall(function()
       mod.adapter.setWorkAllowed(false)
       mod.iface.setInterfaceConfiguration(1)
       mod.iface.setInterfaceConfiguration(2)
       mod.iface.setInterfaceConfiguration(3)
     end)
+    if not initialized then
+      setModuleError(mod, "startup initialization", initError)
+    end
   end
 end
 
@@ -979,11 +1167,19 @@ end
 --   - dispatch: every DISPATCH_INTERVAL
 local UI_INTERVAL = 0.25          -- seconds between full UI repaints
 local lastUIDraw  = 0
+local stopRequested = false
 
-while true do
-  -- 1. Service one telemetry or remote-editor message.
-  local ev = { event.pull(0.01, "modem_message") }
-  if ev[1] == "modem_message" then processMessage(table.unpack(ev)) end
+while not stopRequested do
+  -- 1. Service one event. Modem traffic keeps the same fast cadence; keyboard
+  --    events only control the non-blocking log overlay.
+  local ev = { event.pull(0.01) }
+  if ev[1] == "modem_message" then
+    processMessage(table.unpack(ev))
+  elseif ev[1] == "key_down" then
+    handleBrokerKey(ev[3], ev[4])
+  elseif ev[1] == "interrupted" then
+    stopRequested = true
+  end
 
   -- 2. Advance every in-flight load task. This is the hot path — runs every
   --    iteration so concurrent loads progress as fast as the hardware allows.
@@ -1002,7 +1198,7 @@ while true do
   end
 
   -- 5. Dispatch on its own cadence.
-  local now = os.time()
+  local now = computer.uptime()
   if brokerState.telemetryReady and not brokerState.awaitingDustRefresh and
      (now - lastDispatchCheck >= DISPATCH_INTERVAL) then
     dispatchBatch()
@@ -1014,7 +1210,14 @@ while true do
   --    frees the loop to tick the scheduler hundreds of times per second.
   local up = computer.uptime()
   if up - lastUIDraw >= UI_INTERVAL then
-    drawUI()
+    if logViewActive then drawLogView() else drawUI() end
     lastUIDraw = up
   end
+end
+
+if gpu then
+  gpu.setBackground(0x000000)
+  gpu.setForeground(0xFFFFFF)
+  term.clear()
+  print("MEDINA broker stopped.")
 end

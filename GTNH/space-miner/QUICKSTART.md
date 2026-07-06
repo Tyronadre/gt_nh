@@ -1,8 +1,8 @@
 # MEDINA — Quick Start
 
 Automated Space Elevator mining for **GregTech: New Horizons**, running on
-**OpenComputers**. Tell it what dusts to keep stocked; it mines them for you
-across up to 6 Mining Modules at once.
+**OpenComputers**. Tell it what dusts to keep stocked; it mines them across all
+modules configured on the broker.
 
 This is the fast, friendly guide. For the full technical details see
 [README.md](README.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -16,8 +16,8 @@ This is the fast, friendly guide. For the full technical details see
   server in a rack with a component bus (each module uses component slots).
 - Tier 2 Wireless Network Card
 - GPU + screen (a 3-wide × 2-tall screen array is ideal, but start with anything)
-- **One OpenComputers Database upgrade** — shared by all modules. A basic one
-  covers 6 modules; a Tier 3 covers up to 27.
+- **One OpenComputers Database upgrade** — shared by all modules. Each module
+  uses three slots: a 25-slot database covers 8 modules and Tier 3 covers 27.
 
 **Each Mining Module needs three OpenComputers parts:**
 1. An **Adapter** touching the Mining Module's controller
@@ -210,18 +210,19 @@ To stop the broker: **Ctrl+Alt+C** in the console.
 | Symptom | Cause / fix |
 |---------|-------------|
 | A dust sits at **0%** forever | `itemName` doesn't exactly match the in-game name. Fix spelling/capitalization. |
-| A module shows **ERROR** | It auto-recovers in ~10s and retries. Every load is verified before the machine runs, so it never mines with the wrong gear. |
+| A module shows **ERROR** | The next one or two lines show the failed stage and exact reason. Press **L** for the full current-session log. It auto-recovers after about 10 seconds. |
 | A module just **waits / never loads** | You may have no drone in that asteroid's tier range, or no matching drill kit. Check the right panel. |
 | Stuck on **"Waiting for telemetry..."** | The broker needs ALL THREE telem nodes (dust, hardware, fluid) reporting before it dispatches. Make sure all three telem computers are running and each `targetSide` is correct. |
 | Edited targets do not appear on broker | Save with Ctrl+S and close with Esc. Compare the revision shown after `TARGET CONFIG` on the dust dashboard with the broker's `Targets` line. The configuration is embedded in the first DUST_UPDATE chunk on port 2026. |
 | Dashboard shows **"NO PLASMA - MINING BLOCKED"** | Modules can't run without a plasma fluid. Make sure you have one of the supported plasmas (Helium / Bismuth / Radon / Technetium / Plutonium-241) and that it's piped into each module's input hatch. |
-| Want to see what's happening | Logging is off by default; set `config.logging.enabled = true` in `config.lua`. Logs go to `/tmp/spacemining.log`. |
+| Want to see what's happening | Press **L** on the broker. Use arrows/Page Up/Page Down to scroll and L/Esc to close. Persistent ERROR/WARN entries also go to `/tmp/spacemining.log`. |
 
 ---
 
 ## Want more?
 
-- **Scaling past one computer's component limit** — the optional `job_node.lua`
-  remote-worker path. The shared database caps a fleet at 27 modules.
+- **More modules** — there is no six-module software cap. Twelve modules need
+  36 database slots and 36 module-specific components. Tier 3 database capacity
+  is 27 modules; remote workers can spread component load across computers.
 
 MIT licensed. Built for the GTNH community — happy mining.
