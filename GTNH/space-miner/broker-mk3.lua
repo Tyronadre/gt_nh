@@ -115,6 +115,7 @@ local brokerState = {
   lastDustSyncTime = 0, lastFluidSyncTime = 0, lastHWSyncTime = 0,
   lastDustSync = "--:--:--", lastFluidSync = "--:--:--", lastHWSync = "--:--:--",
   lastEditorContactTime = 0, lastEditorContact = "--:--:--",
+  lastTargetRevision = "--",
   nextTarget = nil, telemetryReady = false, awaitingDustRefresh = true,
   dustBatchId = nil, dustChunks = {},
   priorityMode = "threshold",  -- "threshold" (lowest fill first) | "rarity" (dust priority first)
@@ -519,6 +520,50 @@ local function sendTargetEditorReply(address, responsePort, requestId,
   return true
 end
 
+local function acceptTargetSettings(settings, revision)
+  local valid, validationError = pcall(config.buildTargetConditions, settings)
+  if not valid then
+    local message = "Validation failed: " .. tostring(validationError)
+    logger:error("[TARGETS] " .. message)
+    return false, message
+  end
+
+  local serialized, serializedSettings = pcall(serial.serialize, settings)
+  if not serialized then
+    local message = "Could not serialize submitted targets: " ..
+                    tostring(serializedSettings)
+    logger:error("[TARGETS] " .. message)
+    return false, message
+  end
+
+  local submittedSignature = type(revision) == "string" and
+                             ("dust:" .. revision) or
+                             ("rpc:" .. serializedSettings)
+  if submittedSignature == targetSettingsSignature then
+    return true, "Broker targets already current"
+  end
+
+  local saved, saveError = targetEditorModule.writeSettings(
+    config.targetConfigPath or "/home/target_config.lua", settings)
+  if not saved then
+    local message = "Save failed: " .. tostring(saveError)
+    logger:error("[TARGETS] " .. message)
+    return false, message
+  end
+
+  local applied, applyError = pcall(applyRuntimeTargets, settings)
+  if not applied then
+    local message = "Runtime apply failed: " .. tostring(applyError)
+    logger:error("[TARGETS] " .. message)
+    return false, message
+  end
+
+  targetSettingsSignature = submittedSignature
+  local message = #config.conditions .. " targets saved and applied"
+  logger:info("[TARGETS] " .. message)
+  return true, message
+end
+
 local function processMessage(evType, _, remoteAddress, port, _, rawMsg)
   if evType ~= "modem_message" then return end
   local ok, msg = pcall(serial.unserialize, rawMsg)
@@ -533,6 +578,7 @@ local function processMessage(evType, _, remoteAddress, port, _, rawMsg)
     local responsePort = validPort(msg.replyPort) and msg.replyPort or port
     brokerState.lastEditorContactTime = os.time()
     brokerState.lastEditorContact = os.date("%X")
+    brokerState.lastTargetRevision = tostring(msg.revision or "RPC")
     logger:info("[EDITOR] " .. tostring(msg.payloadType) .. " from " ..
                 tostring(remoteAddress) .. ", reply port " .. responsePort)
 
@@ -545,54 +591,9 @@ local function processMessage(evType, _, remoteAddress, port, _, rawMsg)
     if msg.payloadType == "TARGET_CONFIG_REQUEST" then
       reply(true, "Current broker targets", config.targetSettings)
     elseif msg.payloadType == "TARGET_CONFIG_APPLY" then
-      local valid, validationError = pcall(config.buildTargetConditions, msg.settings)
-      if not valid then
-        logger:error("[EDITOR] Validation failed: " .. tostring(validationError))
-        reply(false, "Validation failed: " .. tostring(validationError))
-        return
-      end
-
-      local serialized, serializedSettings =
-        pcall(serial.serialize, msg.settings)
-      if not serialized then
-        logger:error("[EDITOR] Could not serialize submitted targets: " ..
-                     tostring(serializedSettings))
-        reply(false, "Could not serialize submitted targets: " ..
-                     tostring(serializedSettings))
-        return
-      end
-      local submittedSignature = type(msg.revision) == "string" and
-                                 ("dust:" .. msg.revision) or
-                                 ("rpc:" .. serializedSettings)
-
-      -- The dust node republishes its settings with every telemetry batch so a
-      -- dropped wireless packet heals itself. Avoid rewriting the file every
-      -- ten seconds when the effective configuration has not changed.
-      if submittedSignature == targetSettingsSignature then
-        reply(true, "Broker targets already current", config.targetSettings)
-        return
-      end
-
-      local saved, saveError = targetEditorModule.writeSettings(
-        config.targetConfigPath or "/home/target_config.lua", msg.settings)
-      if not saved then
-        logger:error("[EDITOR] Save failed: " .. tostring(saveError))
-        reply(false, "Save failed: " .. tostring(saveError))
-        return
-      end
-
-      local applied, applyError = pcall(applyRuntimeTargets, msg.settings)
-      if not applied then
-        logger:error("[EDITOR] Runtime apply failed: " .. tostring(applyError))
-        reply(false, "Runtime apply failed: " .. tostring(applyError))
-        return
-      end
-
-      targetSettingsSignature = submittedSignature
-      logger:info("[EDITOR] Applied " .. #config.conditions ..
-                  " targets from dust node")
-      reply(true, #config.conditions .. " targets saved and applied",
-            config.targetSettings)
+      local accepted, message =
+        acceptTargetSettings(msg.settings, msg.revision)
+      reply(accepted, message, accepted and config.targetSettings or nil)
     end
     return
   end
@@ -600,6 +601,16 @@ local function processMessage(evType, _, remoteAddress, port, _, rawMsg)
   if msg.protocol ~= "MEDINA_TELEMETRY" or not msg.data then return end
 
   if msg.payloadType == "DUST_UPDATE" then
+    -- The first chunk contains both its stock rows and the target settings.
+    -- This makes target delivery inseparable from the already-working dust
+    -- telemetry path; a missing first chunk also leaves the batch incomplete.
+    if msg.targetSettings ~= nil then
+      brokerState.lastEditorContactTime = os.time()
+      brokerState.lastEditorContact = os.date("%X")
+      brokerState.lastTargetRevision = tostring(msg.targetRevision or "?")
+      acceptTargetSettings(msg.targetSettings, msg.targetRevision)
+    end
+
     for name, entry in pairs(msg.data) do
       local current = brokerState.dust[name] or {}
       current.stock = entry.stock or 0
@@ -770,7 +781,9 @@ local function drawHWPanel()
   gpu.setForeground(getSyncColor(brokerState.lastHWSyncTime)); io.write("  HW:     " .. brokerState.lastHWSync)
   row = row + 1
   clear(row); term.setCursor(P3 + 1, row)
-  gpu.setForeground(getSyncColor(brokerState.lastEditorContactTime)); io.write("  Targets: " .. brokerState.lastEditorContact)
+  gpu.setForeground(getSyncColor(brokerState.lastEditorContactTime))
+  io.write("  Targets: " .. brokerState.lastEditorContact .. "  " ..
+           brokerState.lastTargetRevision)
   row = row + 2
 
   clear(row); term.setCursor(P3 + 1, row)

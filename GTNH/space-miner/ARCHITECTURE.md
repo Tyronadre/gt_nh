@@ -152,8 +152,8 @@ interactive stock-target editor.
 
 **Network:**
 - **Outbound (Port 2026):** Broadcasts chunked DUST_UPDATE payloads every 10 seconds
-- Broadcasts the current target revision before each dust snapshot; the broker
-  only persists it when the revision changes
+- Embeds the complete settings and revision in the first DUST_UPDATE chunk; the
+  broker only persists them when the revision changes
 - Payload: all registered mineable item names and current stock counts
 
 **Exclusive UI modes:**
@@ -318,14 +318,15 @@ freshly edited target set.
 }
 ```
 
-### MEDINA_TARGET_EDITOR (Dust Node → Broker, Port 2026)
+### Target Settings in MEDINA_TELEMETRY (Dust Node → Broker, Port 2026)
 
-The dust node broadcasts `TARGET_CONFIG_APPLY` before every dust snapshot.
-These packets are fire-and-forget (`noReply=true`) and carry a content revision.
-The broker validates, saves, and applies a revision once; repeated packets are
-ignored. This reuses the proven telemetry route and recovers automatically from
-a dropped broadcast. The optional standalone editor may still request a direct
-result on port 2028.
+The dust node embeds the complete settings and content revision in the first
+`DUST_UPDATE` chunk of every snapshot. The broker validates, saves, and applies
+a revision once; repeated snapshots are ignored. Target delivery therefore uses
+the exact packet path already used for stock telemetry. Losing the first chunk
+also leaves the stock batch incomplete, so the next snapshot retries both. The
+optional standalone editor may still use `TARGET_CONFIG_APPLY` and request a
+direct result on port 2028.
 
 ### MEDINA_JOB (Job Node → Broker Status, Port 2026)
 

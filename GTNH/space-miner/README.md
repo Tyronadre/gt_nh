@@ -139,11 +139,11 @@ dust telemetry is intentionally paused.
 - **Esc / Ctrl+W** — close the editor; unsaved changes require confirmation
 
 After saving, close the editor with **Esc**. The dust dashboard resumes
-immediately, sends the complete target set over telemetry port 2026, and follows
-it with a fresh stock snapshot. The dust node repeats the target set every ten
+immediately and embeds the complete target set directly into the first chunk of
+its fresh stock snapshot on port 2026. The dust node repeats it every ten
 seconds; the broker validates and persists it only when its revision changes.
-This makes a dropped wireless packet self-healing without repeatedly writing
-`target_config.lua`.
+If the first chunk is lost, the snapshot remains incomplete and the next batch
+retries both stocks and targets.
 Typing immediately after opening a field replaces its old value; moving the
 cursor first switches to in-place editing.
 The standalone loop polls input every 50 ms. Text input uses an immediate

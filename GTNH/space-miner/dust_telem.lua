@@ -138,8 +138,8 @@ local trackedNames = {}
 for itemName in pairs(trackedItems) do trackedNames[#trackedNames+1] = itemName end
 table.sort(trackedNames)
 
--- Keep every serialized modem packet comfortably below OC's packet-size limit.
-local CHUNK_SIZE = 20
+-- The first chunk also carries target_config, so leave generous packet room.
+local CHUNK_SIZE = 10
 local chunkCount = math.ceil(#trackedNames / CHUNK_SIZE)
 local batchId = 0
 
@@ -156,24 +156,14 @@ local function broadcastPacket(message)
   return true
 end
 
-local function broadcastTargetSettings()
-  return broadcastPacket({
-    protocol    = "MEDINA_TARGET_EDITOR",
-    sender      = nodeName,
-    payloadType = "TARGET_CONFIG_APPLY",
-    noReply     = true,
-    revision    = targetSettingsRevision,
-    settings    = config.targetSettings,
-  })
-end
-
 local function drawTargetSyncStatus(ok, message)
   local row = 18
   gpu.fill(2, row, 76, 1, " ")
   term.setCursor(2, row)
   if ok then
     gpu.setForeground(0x00AA00)
-    io.write("TARGET CONFIG: sent with telemetry")
+    io.write(("TARGET CONFIG " .. targetSettingsRevision ..
+              ": embedded in dust snapshot"):sub(1, 76))
   else
     gpu.setForeground(0xFF4444)
     io.write(("TARGET CONFIG ERROR: " .. tostring(message)):sub(1, 76))
@@ -185,10 +175,9 @@ local function telemetryUpdate()
   local sorted = buildSortedList(stocks)
   updateDashboard(sorted)
 
-  local configSent, configError = broadcastTargetSettings()
-  drawTargetSyncStatus(configSent, configError)
-
   batchId = batchId + 1
+  local targetChunkSent = false
+  local targetChunkError = nil
   for chunkIndex = 1, chunkCount do
     local payload = {}
     local first = (chunkIndex - 1) * CHUNK_SIZE + 1
@@ -201,7 +190,7 @@ local function telemetryUpdate()
       }
     end
 
-    broadcastPacket({
+    local message = {
       protocol    = "MEDINA_TELEMETRY",
       sender      = nodeName,
       payloadType = "DUST_UPDATE",
@@ -209,8 +198,19 @@ local function telemetryUpdate()
       chunkIndex  = chunkIndex,
       chunkCount  = chunkCount,
       data        = payload,
-    })
+    }
+    if chunkIndex == 1 then
+      message.targetRevision = targetSettingsRevision
+      message.targetSettings = config.targetSettings
+    end
+
+    local sent, sendError = broadcastPacket(message)
+    if chunkIndex == 1 then
+      targetChunkSent = sent
+      targetChunkError = sendError
+    end
   end
+  drawTargetSyncStatus(targetChunkSent, targetChunkError)
 end
 
 local targetEditor = editorModule.create({

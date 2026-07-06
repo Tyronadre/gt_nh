@@ -213,7 +213,7 @@ To stop the broker: **Ctrl+Alt+C** in the console.
 | A module shows **ERROR** | It auto-recovers in ~10s and retries. Every load is verified before the machine runs, so it never mines with the wrong gear. |
 | A module just **waits / never loads** | You may have no drone in that asteroid's tier range, or no matching drill kit. Check the right panel. |
 | Stuck on **"Waiting for telemetry..."** | The broker needs ALL THREE telem nodes (dust, hardware, fluid) reporting before it dispatches. Make sure all three telem computers are running and each `targetSide` is correct. |
-| Edited targets do not appear on broker | Save with Ctrl+S and close the editor with Esc. Confirm the dust dashboard says `TARGET CONFIG: sent with telemetry`; the broker applies changed revisions received on port 2026. |
+| Edited targets do not appear on broker | Save with Ctrl+S and close with Esc. Compare the revision shown after `TARGET CONFIG` on the dust dashboard with the broker's `Targets` line. The configuration is embedded in the first DUST_UPDATE chunk on port 2026. |
 | Dashboard shows **"NO PLASMA - MINING BLOCKED"** | Modules can't run without a plasma fluid. Make sure you have one of the supported plasmas (Helium / Bismuth / Radon / Technetium / Plutonium-241) and that it's piped into each module's input hatch. |
 | Want to see what's happening | Logging is off by default; set `config.logging.enabled = true` in `config.lua`. Logs go to `/tmp/spacemining.log`. |
 
