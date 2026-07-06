@@ -29,7 +29,7 @@ MEDINA (Modular Extraction and Dispatch Intelligence Network Array) is a wireles
         │  DUST TELEMETRY │ │ HW TELEMETRY│ │ FLUID TELEMETRY│
         │  dust_telem.lua │ │hw_telem.lua │ │fluid_telem.lua │
         │ (DUST_UPDATE)   │ │(HW_UPDATE)  │ │(FLUID_UPDATE)  │
-        │  every 120s     │ │ every 10s   │ │  every 10s     │
+        │  every 10s      │ │ every 10s   │ │  every 10s     │
         └────────┬────────┘ └──────┬──────┘ └───────┬────────┘
                  │                 │                 │
          ┌───────▼─────────────────▼─────────────────▼──────┐
@@ -113,8 +113,8 @@ MEDINA (Modular Extraction and Dispatch Intelligence Network Array) is a wireles
 
 **Supporting modules (on the same computer):**
 - `scheduler.lua` — cooperative task engine (spawn / sleep / await / lock; one clock via `computer.uptime`)
-- `target_editor.lua` — shared editor UI and atomic target-config persistence
-- `target_editor_app.lua` — standalone editor computer; requests on port 2026 and receives broker replies on port 2028
+- `target_editor.lua` — editor UI and atomic target-config persistence, normally hosted by the dust node
+- `target_editor_app.lua` — optional legacy standalone editor
 - `loader.lua` — per-module load sequence, run as a task; read-back confirmation + identity-based item routing
 - `logger.lua` — configurable logging (file / console / Loki); disabled by default, ERROR/WARN to `/tmp/spacemining.log`
 
@@ -142,16 +142,24 @@ MEDINA (Modular Extraction and Dispatch Intelligence Network Array) is a wireles
 
 ### Dust Telemetry Node (dust_telem.lua)
 
-**Purpose:** Scans dust storage subnet and broadcasts inventory levels to the broker.
+**Purpose:** Scans dust storage, broadcasts inventory levels, and hosts the
+interactive stock-target editor.
 
 **Hardware:**
 - Tier 2 Wireless Network Card
-- GPU (small display)
+- GPU, display, and keyboard
 - ME Controller or ME Interface (read-only access to dust storage)
 
 **Network:**
 - **Outbound (Port 2026):** Broadcasts chunked DUST_UPDATE payloads every 10 seconds
+- Broadcasts the current target revision before each dust snapshot; the broker
+  only persists it when the revision changes
 - Payload: all registered mineable item names and current stock counts
+
+**Exclusive UI modes:**
+- The normal dashboard loop scans and publishes telemetry
+- Pressing `T` returns from that loop and starts the editor-only 50 ms input loop
+- Saving is local; closing the editor resumes telemetry and publishes the change
 
 **Monitored Items:**
 - All items in `config.dustTargets` are scanned so the broker can enable them at runtime
@@ -257,11 +265,10 @@ MEDINA (Modular Extraction and Dispatch Intelligence Network Array) is a wireles
 | Component | Purpose | Port | Frequency | Direction |
 |-----------|---------|------|-----------|-----------|
 | **Broker MK3** | Central controller, UI, dispatch, drives local modules | 2026 in, 2027/2028 out | — | Receives telemetry/editor requests; loads/runs its own modules |
-| **Dust Telem** | Monitors dust storage levels | 2026 in | 10s | → Broker |
+| **Dust Telem + Editor** | Monitors stocks; exclusively runs the editor when opened | 2026 in | 10s / after editor closes | → Broker |
 | **HW Telem** | Scans drone/drill kit inventory | 2026 in | 10s | → Broker |
 | **Fluid Telem** | Reads plasma tank levels | 2026 in | 10s | → Broker |
 | **Job Nodes** | Execute mining jobs on modules | 2026 in, 2027 out | Per job | ← Broker commands, → Status updates |
-| **Target Editor** | Responsive configuration UI | 2026 out, 2028 in | On demand | ↔ Broker |
 
 ---
 
@@ -311,15 +318,14 @@ freshly edited target set.
 }
 ```
 
-### MEDINA_TARGET_EDITOR (Request Port 2026, Reply Port 2028)
+### MEDINA_TARGET_EDITOR (Dust Node → Broker, Port 2026)
 
-The standalone editor requests the current settings with
-`TARGET_CONFIG_REQUEST` and submits a complete validated table with
-`TARGET_CONFIG_APPLY`. The broker replies directly with
-`TARGET_CONFIG_RESULT`, including success/error state and the effective
-settings. Requests include `replyPort=2028`; the broker remains the authority
-that writes `target_config.lua`. Discovery is retried once per second for ten
-seconds instead of depending on a single wireless broadcast.
+The dust node broadcasts `TARGET_CONFIG_APPLY` before every dust snapshot.
+These packets are fire-and-forget (`noReply=true`) and carry a content revision.
+The broker validates, saves, and applies a revision once; repeated packets are
+ignored. This reuses the proven telemetry route and recovers automatically from
+a dropped broadcast. The optional standalone editor may still request a direct
+result on port 2028.
 
 ### MEDINA_JOB (Job Node → Broker Status, Port 2026)
 

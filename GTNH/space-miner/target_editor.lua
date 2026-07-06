@@ -151,6 +151,10 @@ function editorModule.create(options)
   local computer = options.computer
   local config = options.config
   local path = options.path or "/home/target_config.lua"
+  local headerText = options.headerText or
+                     "MEDINA TARGET EDITOR - mining and telemetry remain active"
+  local openHint = options.openHint or
+                   "Edit targets while mining continues in the background."
 
   local editor = {
     active = false,
@@ -457,7 +461,7 @@ function editorModule.create(options)
     self.disabledValues = {}
     self.controlDown = keyboard.isControlDown()
     self.selected = math.max(1, math.min(self.selected, totalRows()))
-    setHint("Edit targets while mining continues in the background.")
+    setHint(openHint)
   end
 
   local function requestClose()
@@ -711,7 +715,7 @@ function editorModule.create(options)
     gpu.setBackground(0x000000)
     gpu.setForeground(0x00FF00)
     term.clear()
-    gpu.set(2, 1, "MEDINA TARGET EDITOR - mining and telemetry remain active")
+    gpu.set(2, 1, headerText:sub(1, width - 2))
     gpu.setForeground(0x666666)
     gpu.set(2, 2, ("FILE: " .. path):sub(1, width - 2))
     gpu.set(1, 3, string.rep("=", width))

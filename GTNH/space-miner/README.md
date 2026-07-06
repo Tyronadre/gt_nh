@@ -30,8 +30,8 @@ Each module has its own ME Interface adapter + transposer; one shared OC Databas
 |------|---------|---------|
 | `config.lua` | *all nodes* | Project config — drones, drills, asteroids, plasmas, and optimization data. Copy to `/home/config.lua` on every computer. |
 | `target_config.lua` | *all nodes* | **Your stock settings.** Selects the default ME item-cell size and lists enabled items plus optional per-item overrides. The installer creates it once and never overwrites it. |
-| `target_editor.lua` | broker + editor | Shared target-editor UI and safe config persistence module. |
-| `target_editor_app.lua` | editor computer | Responsive standalone UI. Discovers the broker on port 2026 and receives replies on its dedicated port 2028. |
+| `target_editor.lua` | dust node + broker | Integrated target-editor UI and safe config persistence module. |
+| `target_editor_app.lua` | optional editor computer | Retained as an alternative standalone UI. |
 | `broker-mk3.lua` | broker | **The broker.** Aggregates telemetry, dispatches jobs (drone-first with a per-asteroid cap), and spawns one cooperative load task per module. Requires `/home/job_node_config.lua`, `/home/scheduler.lua`, `/home/loader.lua`, `/home/target_editor.lua`, `/home/logger.lua`. |
 | `scheduler.lua` | broker | Cooperative task engine: `spawn`, `sleep`, `await`, fair `lock`. One clock (`computer.uptime`). Lets all 6 loads run concurrently without freezing the UI/telemetry. You never edit this to add features — you spawn a task. |
 | `loader.lua` | broker | One module's consumable-load sequence, run as a scheduler task. Confirms database fingerprints by read-back and routes items into the input bus by identity (not slot position). |
@@ -59,7 +59,7 @@ Each module has its own ME Interface adapter + transposer; one shared OC Databas
 3. **Identity-based item routing.** Items are moved into the input bus by matching their label in the interface buffer, not by trusting slot positions (the ME interface can shuffle buffer slots under load). Each load is verified before the machine is enabled; a bad load ERRORs and auto-recovers in ~10 s rather than running wrong.
 4. **Drone-first dispatch with a per-asteroid cap.** Uses the highest-tier available drones first, but no single asteroid may hold more than `floor(totalModules / 2) + 1` modules — so a high-tier target (e.g. Infinity Catalyst) can't starve lower-tier needs. Availability pools subtract drones/kits already committed to busy modules, preventing double-assignment.
 5. **Priority-mode boot prompt.** At startup, choose *Threshold* (mine the lowest stock/target ratio first) or *Rarity* (highest dust-priority first, then ratio).
-6. **Remote target editor.** A separate OC computer provides a responsive UI while the broker continues mining. It sends requests to the broker on port 2026 and listens for replies on port 2028; the broker validates, saves, and applies submitted targets.
+6. **Dust-node target editor.** Press `T` on the dust monitor to pause its telemetry loop and give the editor exclusive control of input/rendering. Closing the editor immediately resumes telemetry and publishes the saved targets to the broker on the already-established port 2026 path.
 
 **Throughput:** all 6 modules load in ~1–2 s each and mine in parallel. Measured ~9.4× the earlier blocking design (≈100k → ≈938k Infinity Catalyst dust/hr), confirmed stable over a 12-hour soak test.
 
@@ -123,26 +123,27 @@ triggering mining.
 
 The installer preserves an existing copy during updates.
 
-### Remote Target Editor
+### Integrated Dust-Node Target Editor
 
-Run `target_editor_app.lua` on a separate OC computer with a T2 wireless card,
-GPU, screen, and keyboard. It fetches the current configuration from the live
-broker and owns its event/render loop, so mining hardware calls cannot delay
-keyboard input.
+Run `dust_telem.lua` on the dust monitor and press **T** (or **F4**). The normal
+telemetry loop returns before the editor loop starts, so ME scans, ten-second
+waits, and broadcasts cannot delay keyboard input. While the editor is open,
+dust telemetry is intentionally paused.
 
 - **Up/Down, Page Up/Page Down, Home/End** — navigate
 - **Space** — enable/disable an item or toggle keep-all mode
 - **Enter** — edit the selected setting/target
 - **Left/Right, Home/End, Backspace/Delete** — move and edit at the blinking cursor
-- **Ctrl+S** — validate, save, and apply immediately
+- **Ctrl+S** — validate and save locally
 - **Ctrl+R** — discard the draft, reload the file, and apply it
 - **Esc / Ctrl+W** — close the editor; unsaved changes require confirmation
 
-On **Ctrl+S**, the application sends the complete target set to the broker. The
-broker validates it, writes a temporary Lua file, retains
-`target_config.lua.bak`, then replaces and applies the live configuration.
-Dispatch briefly waits for a complete fresh dust telemetry batch so newly
-enabled items cannot be mistaken for zero stock.
+After saving, close the editor with **Esc**. The dust dashboard resumes
+immediately, sends the complete target set over telemetry port 2026, and follows
+it with a fresh stock snapshot. The dust node repeats the target set every ten
+seconds; the broker validates and persists it only when its revision changes.
+This makes a dropped wireless packet self-healing without repeatedly writing
+`target_config.lua`.
 Typing immediately after opening a field replaces its old value; moving the
 cursor first switches to in-place editing.
 The standalone loop polls input every 50 ms. Text input uses an immediate
@@ -153,7 +154,7 @@ contents change.
 
 ### `dust_telem.lua` — Dust Storage Monitor
 
-**Hardware:** T2 wireless card · T3 GPU · T3 screen · OC Adapter on the **dust-storage ME Controller**
+**Hardware:** T2 wireless card · T3 GPU · T3 screen + keyboard · OC Adapter on the **dust-storage ME Controller**
 
 Queries `adapter.getItemsInNetwork()` and broadcasts all items registered in
 `config.dustTargets` every 10 seconds. The 104 entries are split into small
@@ -369,6 +370,9 @@ Each telem node needs only its own script and the two shared config files:
 /home/dust_telem.lua    (or hw_telem.lua / fluid_telem.lua)
 ```
 
+The dust node additionally needs `/home/target_editor.lua`; installer role 2
+includes it automatically.
+
 Set `targetSide` at the top of each script to the side of the OC Adapter facing
 the relevant ME Controller (dust node → dust-storage network; hardware node →
 the network holding your drones/drill bits). Boot and leave running.
@@ -397,20 +401,12 @@ Copy these to the broker computer:
 
 To stop it, break the script with **Ctrl+Alt+C** in the OC console.
 
-### 4. Remote target editor
+### 4. Edit stock targets
 
-On a separate computer, install the **Target editor** role or copy:
-
-```
-/home/config.lua
-/home/target_config.lua
-/home/target_editor.lua
-/home/target_editor_app.lua
-```
-
-Run `target_editor_app`. It retries broker discovery on port 2026 and listens
-for the broker's direct answer on port 2028. Both computers must use the current
-`config.lua`; the connection screen prints the two effective ports.
+The Dust-node installer role includes `target_editor.lua`. Run `dust_telem`,
+press **T**, edit and save with **Ctrl+S**, then press **Esc** to resume
+telemetry and publish the configuration. No separate editor computer or broker
+reply is required.
 
 ### 5. Multi-node fleets (future / optional)
 

@@ -33,6 +33,7 @@ local config = dofile("/home/config.lua")
 local sched  = dofile("/home/scheduler.lua")
 local loader = dofile("/home/loader.lua")
 local targetEditorModule = dofile("/home/target_editor.lua")
+local targetSettingsSignature = nil
 
 local loggingModule = dofile("/home/logger.lua")
 assert(loggingModule and loggingModule.createLogger, "logger.lua not loaded")
@@ -535,35 +536,63 @@ local function processMessage(evType, _, remoteAddress, port, _, rawMsg)
     logger:info("[EDITOR] " .. tostring(msg.payloadType) .. " from " ..
                 tostring(remoteAddress) .. ", reply port " .. responsePort)
 
+    local function reply(success, message, settings)
+      if msg.noReply == true then return true end
+      return sendTargetEditorReply(remoteAddress, responsePort, msg.requestId,
+                                   success, message, settings)
+    end
+
     if msg.payloadType == "TARGET_CONFIG_REQUEST" then
-      sendTargetEditorReply(remoteAddress, responsePort, msg.requestId, true,
-                            "Current broker targets", config.targetSettings)
+      reply(true, "Current broker targets", config.targetSettings)
     elseif msg.payloadType == "TARGET_CONFIG_APPLY" then
       local valid, validationError = pcall(config.buildTargetConditions, msg.settings)
       if not valid then
-        sendTargetEditorReply(remoteAddress, responsePort, msg.requestId, false,
-                              "Validation failed: " .. tostring(validationError))
+        logger:error("[EDITOR] Validation failed: " .. tostring(validationError))
+        reply(false, "Validation failed: " .. tostring(validationError))
+        return
+      end
+
+      local serialized, serializedSettings =
+        pcall(serial.serialize, msg.settings)
+      if not serialized then
+        logger:error("[EDITOR] Could not serialize submitted targets: " ..
+                     tostring(serializedSettings))
+        reply(false, "Could not serialize submitted targets: " ..
+                     tostring(serializedSettings))
+        return
+      end
+      local submittedSignature = type(msg.revision) == "string" and
+                                 ("dust:" .. msg.revision) or
+                                 ("rpc:" .. serializedSettings)
+
+      -- The dust node republishes its settings with every telemetry batch so a
+      -- dropped wireless packet heals itself. Avoid rewriting the file every
+      -- ten seconds when the effective configuration has not changed.
+      if submittedSignature == targetSettingsSignature then
+        reply(true, "Broker targets already current", config.targetSettings)
         return
       end
 
       local saved, saveError = targetEditorModule.writeSettings(
         config.targetConfigPath or "/home/target_config.lua", msg.settings)
       if not saved then
-        sendTargetEditorReply(remoteAddress, responsePort, msg.requestId, false,
-                              "Save failed: " .. tostring(saveError))
+        logger:error("[EDITOR] Save failed: " .. tostring(saveError))
+        reply(false, "Save failed: " .. tostring(saveError))
         return
       end
 
       local applied, applyError = pcall(applyRuntimeTargets, msg.settings)
       if not applied then
-        sendTargetEditorReply(remoteAddress, responsePort, msg.requestId, false,
-                              "Runtime apply failed: " .. tostring(applyError))
+        logger:error("[EDITOR] Runtime apply failed: " .. tostring(applyError))
+        reply(false, "Runtime apply failed: " .. tostring(applyError))
         return
       end
 
-      sendTargetEditorReply(remoteAddress, responsePort, msg.requestId, true,
-                            #config.conditions .. " targets saved and applied",
-                            config.targetSettings)
+      targetSettingsSignature = submittedSignature
+      logger:info("[EDITOR] Applied " .. #config.conditions ..
+                  " targets from dust node")
+      reply(true, #config.conditions .. " targets saved and applied",
+            config.targetSettings)
     end
     return
   end
@@ -741,7 +770,7 @@ local function drawHWPanel()
   gpu.setForeground(getSyncColor(brokerState.lastHWSyncTime)); io.write("  HW:     " .. brokerState.lastHWSync)
   row = row + 1
   clear(row); term.setCursor(P3 + 1, row)
-  gpu.setForeground(getSyncColor(brokerState.lastEditorContactTime)); io.write("  Editor: " .. brokerState.lastEditorContact)
+  gpu.setForeground(getSyncColor(brokerState.lastEditorContactTime)); io.write("  Targets: " .. brokerState.lastEditorContact)
   row = row + 2
 
   clear(row); term.setCursor(P3 + 1, row)
@@ -836,8 +865,8 @@ local function drawStaticFrame()
   gpu.fill(1, 1, W, 1, "="); gpu.fill(1, 5, W, 1, "=")
   term.setCursor(2, 2); gpu.setForeground(0xFFFFFF); io.write("MEDINA BROKER MK3  (v1.5)")
   term.setCursor(2, 3); gpu.setForeground(0x666666)
-  io.write("TARGET EDITOR: REQUEST " .. config.ports.telemetry ..
-           " / REPLY " .. (config.ports.targetEditor or 2028))
+  io.write("TARGET CONFIG VIA DUST TELEMETRY: PORT " ..
+           config.ports.telemetry)
   term.setCursor(P1 + 1, 4); io.write("MODULES")
   term.setCursor(P2 + 1, 4); io.write("DUST STOCK")
   term.setCursor(P3 + 1, 4); io.write("HARDWARE")

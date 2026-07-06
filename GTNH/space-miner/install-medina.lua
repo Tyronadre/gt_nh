@@ -13,11 +13,11 @@
 --
 -- Roles:
 --   1) Broker        — the main computer (dispatch + module loading + UI)
---   2) Dust node     — monitors dust storage        (required telem)
+--   2) Dust node     — monitors dust + target editor (required telem)
 --   3) Hardware node — monitors drones/drill kits    (required telem)
 --   4) Fluid node    — monitors plasma               (required telem)
 --   5) Remote job node (optional, multi-node fleets)
---   6) Target editor  — responsive remote target UI
+--   6) Target editor  — optional separate target UI
 --   7) Everything    — grab every file (e.g. one shared drive / testing)
 -- =============================================================================
 
@@ -42,9 +42,9 @@ local ROLES = {
     note = "Edit /home/job_node_config.lua with your hardware, then run: broker-mk3",
   },
   ["dust"] = {
-    label = "Dust monitor node (required)",
-    files = { "dust_telem.lua" },
-    note = "Set targetSide at the top of dust_telem.lua, then run: dust_telem",
+    label = "Dust monitor + target editor (required)",
+    files = { "dust_telem.lua", "target_editor.lua" },
+    note = "Run dust_telem, then press T to open the integrated target editor",
   },
   ["hw"] = {
     label = "Hardware monitor node (required)",
@@ -149,7 +149,7 @@ print("  MEDINA INSTALLER")
 print("================================================")
 print("What is this computer?")
 print("  1) Broker        (main computer)")
-print("  2) Dust node     (required monitor)")
+print("  2) Dust node     (monitor + target editor)")
 print("  3) Hardware node (required monitor)")
 print("  4) Fluid node    (required monitor)")
 print("  5) Remote job node (optional)")

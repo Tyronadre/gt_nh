@@ -3,7 +3,7 @@
 -- File:    dust_telem.lua
 -- Purpose: Queries the dust storage ME subnet; displays the 10 most critical
 --          configured items and broadcasts every known mineable item to the
---          broker so runtime target edits can take effect without a restart.
+--          broker. Press T to switch exclusively into the stock-target editor.
 --
 -- OpenComputers Sides Reference Matrix:
 --   0 = Bottom / Down (-Y) | 1 = Top / Up (+Y) | 2 = North (-Z)
@@ -11,10 +11,14 @@
 -- =============================================================================
 
 local component     = require("component")
+local computer      = require("computer")
+local event         = require("event")
+local keyboard      = require("keyboard")
 local serialization = require("serialization")
 local term          = require("term")
 
 local config = dofile("/home/config.lua")
+local editorModule = dofile("/home/target_editor.lua")
 
 if not component.isAvailable("modem")   then error("Missing network card.")          end
 if not component.isAvailable("me_controller") then error("Missing ME Controller.") end
@@ -32,11 +36,25 @@ local nodeName = "MEDINA-DustRelay"
 modem.setStrength(400)
 gpu.setResolution(80, 25)
 
--- Build threshold lookup from config.conditions (itemName → amountToMaintain)
 local thresholds = {}
-for _, cond in ipairs(config.conditions) do
-  thresholds[cond.itemName] = cond.amountToMaintain
+local targetSettingsRevision
+local function revisionOf(settings)
+  local text = serialization.serialize(settings)
+  local hash = 0
+  for index = 1, #text do
+    hash = (hash * 31 + text:byte(index)) % 2147483647
+  end
+  return tostring(#text) .. ":" .. tostring(hash)
 end
+
+local function refreshThresholds()
+  thresholds = {}
+  for _, cond in ipairs(config.conditions) do
+    thresholds[cond.itemName] = cond.amountToMaintain
+  end
+  targetSettingsRevision = revisionOf(config.targetSettings)
+end
+refreshThresholds()
 
 -- Scan every registered target, not just the locally configured targets. The
 -- broker can then enable a previously disabled item from its runtime editor.
@@ -75,6 +93,8 @@ local function drawStaticFrame()
   print(" MEDINA RELAY NETWORK  |  NODE: " .. nodeName)
   print("================================================================================")
   gpu.setForeground(0x888888)
+  term.setCursor(2, 4)
+  io.write("[T] EDIT STOCK TARGETS  (telemetry pauses only while editor is open)")
   term.setCursor(2, 5)
   io.write(string.format("  %-29s  %20s  %s", "ITEM (lowest fill first)", "STOCK / TARGET", "FILL"))
   term.setCursor(2, 6)
@@ -114,8 +134,6 @@ local function updateDashboard(sorted)
   io.write("LAST_SYNC: " .. os.date("%X"))
 end
 
-drawStaticFrame()
-
 local trackedNames = {}
 for itemName in pairs(trackedItems) do trackedNames[#trackedNames+1] = itemName end
 table.sort(trackedNames)
@@ -125,10 +143,50 @@ local CHUNK_SIZE = 20
 local chunkCount = math.ceil(#trackedNames / CHUNK_SIZE)
 local batchId = 0
 
-while true do
+local function broadcastPacket(message)
+  local packet = serialization.serialize(message)
+  if #packet > modem.maxPacketSize() then
+    return false, "packet too large: " .. #packet .. "/" ..
+                  modem.maxPacketSize() .. " bytes"
+  end
+
+  local ok, sent = pcall(modem.broadcast, config.ports.telemetry, packet)
+  if not ok then return false, tostring(sent) end
+  if not sent then return false, "modem.broadcast returned false" end
+  return true
+end
+
+local function broadcastTargetSettings()
+  return broadcastPacket({
+    protocol    = "MEDINA_TARGET_EDITOR",
+    sender      = nodeName,
+    payloadType = "TARGET_CONFIG_APPLY",
+    noReply     = true,
+    revision    = targetSettingsRevision,
+    settings    = config.targetSettings,
+  })
+end
+
+local function drawTargetSyncStatus(ok, message)
+  local row = 18
+  gpu.fill(2, row, 76, 1, " ")
+  term.setCursor(2, row)
+  if ok then
+    gpu.setForeground(0x00AA00)
+    io.write("TARGET CONFIG: sent with telemetry")
+  else
+    gpu.setForeground(0xFF4444)
+    io.write(("TARGET CONFIG ERROR: " .. tostring(message)):sub(1, 76))
+  end
+end
+
+local function telemetryUpdate()
   local stocks = scanDustStock()
   local sorted = buildSortedList(stocks)
   updateDashboard(sorted)
+
+  local configSent, configError = broadcastTargetSettings()
+  drawTargetSyncStatus(configSent, configError)
 
   batchId = batchId + 1
   for chunkIndex = 1, chunkCount do
@@ -143,7 +201,7 @@ while true do
       }
     end
 
-    modem.broadcast(config.ports.telemetry, serialization.serialize({
+    broadcastPacket({
       protocol    = "MEDINA_TELEMETRY",
       sender      = nodeName,
       payloadType = "DUST_UPDATE",
@@ -151,8 +209,94 @@ while true do
       chunkIndex  = chunkIndex,
       chunkCount  = chunkCount,
       data        = payload,
-    }))
+    })
+  end
+end
+
+local targetEditor = editorModule.create({
+  gpu = gpu,
+  term = term,
+  keyboard = keyboard,
+  computer = computer,
+  config = config,
+  path = "/home/target_config.lua",
+  validate = config.buildTargetConditions,
+  persist = function(settings)
+    local written, writeError =
+      editorModule.writeSettings("/home/target_config.lua", settings)
+    if not written then return false, writeError end
+    return true, "Saved locally. Close editor to publish with dust telemetry."
+  end,
+  apply = function(settings)
+    config.applyTargetSettings(settings)
+    refreshThresholds()
+  end,
+  headerText = "MEDINA TARGET EDITOR - DUST TELEMETRY PAUSED",
+  openHint = "Telemetry is paused. Save, then Esc to publish and resume.",
+})
+
+local function runEditorMode()
+  targetEditor:open()
+  targetEditor:draw()
+
+  while targetEditor:isOpen() do
+    local ev = { event.pull(0.05) }
+    local renderMode = nil
+
+    if ev[1] == "interrupted" then
+      return false
+    elseif ev[1] == "key_down" then
+      renderMode = targetEditor:handleKey(ev[3], ev[4])
+    elseif ev[1] == "key_up" then
+      targetEditor:handleKeyUp(ev[4])
+    elseif ev[1] == "touch" then
+      renderMode = targetEditor:handleTouch(ev[3], ev[4])
+    elseif not ev[1] and targetEditor:isEditing() then
+      renderMode = "input"
+    end
+
+    if targetEditor:isOpen() then
+      if renderMode == "full" then
+        targetEditor:draw()
+      elseif renderMode == "input" then
+        targetEditor:drawFast()
+      end
+    end
   end
 
-  os.sleep(10)  -- Update every 10 seconds, not pipeline delay
+  return true
 end
+
+local function runTelemetryMode()
+  drawStaticFrame()
+  local nextUpdate = 0
+
+  while true do
+    local now = computer.uptime()
+    if now >= nextUpdate then
+      telemetryUpdate()
+      nextUpdate = computer.uptime() + 10
+    end
+
+    local timeout = math.min(0.1, math.max(0, nextUpdate - computer.uptime()))
+    local ev = { event.pull(timeout) }
+    if ev[1] == "interrupted" then
+      return false
+    elseif ev[1] == "key_down" and
+           (ev[4] == keyboard.keys.t or ev[4] == keyboard.keys.f4) then
+      return true
+    end
+  end
+end
+
+-- Exactly one of these loops runs at a time. ME scans and telemetry broadcasts
+-- stop completely while the editor owns the keyboard and screen.
+while true do
+  if not runTelemetryMode() then break end
+  if not runEditorMode() then break end
+end
+
+gpu.setBackground(0x000000)
+gpu.setForeground(0xFFFFFF)
+term.clear()
+print("MEDINA dust telemetry stopped.")
