@@ -31,9 +31,12 @@ local gpu = component.gpu
 local width, height = gpu.maxResolution()
 gpu.setResolution(width, height)
 
-local port = config.ports.command
+local requestPort = config.ports.telemetry
+local replyPort = config.ports.targetEditor or config.ports.command
 modem.setStrength(400)
-modem.open(port)
+modem.open(replyPort)
+assert(modem.isOpen(replyPort),
+       "Could not open target-editor reply port " .. tostring(replyPort))
 
 local brokerAddress = nil
 local requestSequence = 0
@@ -44,51 +47,81 @@ local function nextRequestId()
     computer.address():sub(1, 8), computer.uptime(), requestSequence)
 end
 
-local function exchange(payloadType, settings)
+local function exchange(payloadType, settings, showProgress)
   local requestId = nextRequestId()
   local packet = serialization.serialize({
     protocol = "MEDINA_TARGET_EDITOR",
     payloadType = payloadType,
     requestId = requestId,
+    replyPort = replyPort,
     settings = settings,
   })
 
-  local sent
-  if brokerAddress then
-    sent = modem.send(brokerAddress, port, packet)
-  else
-    sent = modem.broadcast(port, packet)
+  if #packet > modem.maxPacketSize() then
+    return false, "Target configuration is too large for one modem packet (" ..
+                  #packet .. "/" .. modem.maxPacketSize() .. " bytes)"
   end
-  if not sent then
-    return false, "Could not send target-editor packet on port " .. port
+
+  local function transmit()
+    if brokerAddress then
+      return modem.send(brokerAddress, requestPort, packet)
+    end
+    return modem.broadcast(requestPort, packet)
   end
 
   local deadline = computer.uptime() + 10
+  local nextSend = 0
+  local attempts = 0
   while computer.uptime() < deadline do
+    local now = computer.uptime()
+    if now >= nextSend then
+      attempts = attempts + 1
+      local ok, sent = pcall(transmit)
+      if not ok or not sent then
+        return false, "Could not send target-editor packet on port " ..
+                      requestPort .. ": " ..
+                      tostring(ok and "modem returned false" or sent)
+      end
+      if showProgress then
+        io.write(string.format("\rDiscovery request %d on port %d...",
+                              attempts, requestPort))
+      end
+      nextSend = now + 1
+    end
+
     local remaining = deadline - computer.uptime()
-    local ev = { event.pull(math.min(0.25, remaining), "modem_message") }
-    if ev[1] == "modem_message" and ev[4] == port then
+    local untilRetry = math.max(0, nextSend - computer.uptime())
+    local ev = {
+      event.pull(math.min(0.25, remaining, untilRetry), "modem_message")
+    }
+    if ev[1] == "modem_message" and ev[4] == replyPort then
       local decoded, response = pcall(serialization.unserialize, ev[6])
       if decoded and type(response) == "table" and
          response.protocol == "MEDINA_TARGET_EDITOR" and
          response.payloadType == "TARGET_CONFIG_RESULT" and
          response.requestId == requestId then
         brokerAddress = ev[3]
+        if showProgress then print("") end
         return response.success == true, response.message, response.settings
       end
     end
   end
 
-  return false, "Broker did not answer on port " .. port
+  if showProgress then print("") end
+  return false, "Broker did not answer requests on port " .. requestPort ..
+                " using reply port " .. replyPort .. " after " ..
+                attempts .. " attempts"
 end
 
 term.clear()
 gpu.setForeground(0x00FFFF)
 print("Connecting to MEDINA broker...")
+print("Local modem: " .. tostring(modem.address or "unknown"))
+print("Request port: " .. requestPort .. "  Reply port: " .. replyPort)
 gpu.setForeground(0xFFFFFF)
 
 local connected, connectMessage, brokerSettings =
-  exchange("TARGET_CONFIG_REQUEST")
+  exchange("TARGET_CONFIG_REQUEST", nil, true)
 if not connected or type(brokerSettings) ~= "table" then
   error("Target editor connection failed: " .. tostring(connectMessage), 0)
 end

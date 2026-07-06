@@ -114,13 +114,14 @@ MEDINA (Modular Extraction and Dispatch Intelligence Network Array) is a wireles
 **Supporting modules (on the same computer):**
 - `scheduler.lua` — cooperative task engine (spawn / sleep / await / lock; one clock via `computer.uptime`)
 - `target_editor.lua` — shared editor UI and atomic target-config persistence
-- `target_editor_app.lua` — standalone editor computer; submits changes to the broker over port 2027
+- `target_editor_app.lua` — standalone editor computer; requests on port 2026 and receives broker replies on port 2028
 - `loader.lua` — per-module load sequence, run as a task; read-back confirmation + identity-based item routing
 - `logger.lua` — configurable logging (file / console / Loki); disabled by default, ERROR/WARN to `/tmp/spacemining.log`
 
 **Network:**
-- **Inbound (Port 2026):** telemetry from dust_telem / hw_telem / fluid_telem
-- **Port 2027:** remote target-editor requests plus optional remote job-node commands
+- **Inbound (Port 2026):** telemetry plus remote target-editor requests
+- **Outbound (Port 2027):** optional remote job-node commands
+- **Editor reply (Port 2028):** direct broker responses received by the editor computer
 
 **State Tracked:**
 - Dust levels (stock vs. thresholds), drone counts, drill kits, plasma levels — from telemetry
@@ -255,12 +256,12 @@ MEDINA (Modular Extraction and Dispatch Intelligence Network Array) is a wireles
 
 | Component | Purpose | Port | Frequency | Direction |
 |-----------|---------|------|-----------|-----------|
-| **Broker MK3** | Central controller, UI, dispatch, drives local modules | 2026 + 2027 | — | Receives telemetry/editor RPC; loads/runs its own modules |
+| **Broker MK3** | Central controller, UI, dispatch, drives local modules | 2026 in, 2027/2028 out | — | Receives telemetry/editor requests; loads/runs its own modules |
 | **Dust Telem** | Monitors dust storage levels | 2026 in | 10s | → Broker |
 | **HW Telem** | Scans drone/drill kit inventory | 2026 in | 10s | → Broker |
 | **Fluid Telem** | Reads plasma tank levels | 2026 in | 10s | → Broker |
 | **Job Nodes** | Execute mining jobs on modules | 2026 in, 2027 out | Per job | ← Broker commands, → Status updates |
-| **Target Editor** | Responsive configuration UI | 2027 | On demand | ↔ Broker |
+| **Target Editor** | Responsive configuration UI | 2026 out, 2028 in | On demand | ↔ Broker |
 
 ---
 
@@ -310,13 +311,15 @@ freshly edited target set.
 }
 ```
 
-### MEDINA_TARGET_EDITOR (Editor ↔ Broker, Port 2027)
+### MEDINA_TARGET_EDITOR (Request Port 2026, Reply Port 2028)
 
 The standalone editor requests the current settings with
 `TARGET_CONFIG_REQUEST` and submits a complete validated table with
 `TARGET_CONFIG_APPLY`. The broker replies directly with
 `TARGET_CONFIG_RESULT`, including success/error state and the effective
-settings. The broker remains the authority that writes `target_config.lua`.
+settings. Requests include `replyPort=2028`; the broker remains the authority
+that writes `target_config.lua`. Discovery is retried once per second for ten
+seconds instead of depending on a single wireless broadcast.
 
 ### MEDINA_JOB (Job Node → Broker Status, Port 2026)
 

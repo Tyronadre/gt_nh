@@ -158,6 +158,9 @@ On the separate editor computer, run `target_editor_app`. Use **Space** to
 toggle an item, **Enter** to edit its target, and **Ctrl+S** to send, validate,
 save, and apply it on the running broker. The insertion position blinks and
 supports Left/Right, Home/End, Backspace, and Delete. **Esc** closes the editor.
+Discovery requests use port **2026** and broker replies use the editor's
+dedicated port **2028**. The startup screen shows both ports and retries ten
+times, which makes stale `config.lua` installations immediately visible.
 
 ---
 
@@ -219,6 +222,7 @@ To stop the broker: **Ctrl+Alt+C** in the console.
 | A module shows **ERROR** | It auto-recovers in ~10s and retries. Every load is verified before the machine runs, so it never mines with the wrong gear. |
 | A module just **waits / never loads** | You may have no drone in that asteroid's tier range, or no matching drill kit. Check the right panel. |
 | Stuck on **"Waiting for telemetry..."** | The broker needs ALL THREE telem nodes (dust, hardware, fluid) reporting before it dispatches. Make sure all three telem computers are running and each `targetSide` is correct. |
+| Editor says **"Broker did not answer"** | Update `config.lua`, `broker-mk3.lua`, and `target_editor_app.lua` on their respective computers, then restart the broker. Verify that the editor prints request port 2026 / reply port 2028 and is within wireless range. Broker send failures are recorded in `/tmp/spacemining.log`. |
 | Dashboard shows **"NO PLASMA - MINING BLOCKED"** | Modules can't run without a plasma fluid. Make sure you have one of the supported plasmas (Helium / Bismuth / Radon / Technetium / Plutonium-241) and that it's piped into each module's input hatch. |
 | Want to see what's happening | Logging is off by default; set `config.logging.enabled = true` in `config.lua`. Logs go to `/tmp/spacemining.log`. |
 

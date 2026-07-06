@@ -31,7 +31,7 @@ Each module has its own ME Interface adapter + transposer; one shared OC Databas
 | `config.lua` | *all nodes* | Project config — drones, drills, asteroids, plasmas, and optimization data. Copy to `/home/config.lua` on every computer. |
 | `target_config.lua` | *all nodes* | **Your stock settings.** Selects the default ME item-cell size and lists enabled items plus optional per-item overrides. The installer creates it once and never overwrites it. |
 | `target_editor.lua` | broker + editor | Shared target-editor UI and safe config persistence module. |
-| `target_editor_app.lua` | editor computer | Responsive standalone UI. Sends validated configurations to the running broker over port 2027. |
+| `target_editor_app.lua` | editor computer | Responsive standalone UI. Discovers the broker on port 2026 and receives replies on its dedicated port 2028. |
 | `broker-mk3.lua` | broker | **The broker.** Aggregates telemetry, dispatches jobs (drone-first with a per-asteroid cap), and spawns one cooperative load task per module. Requires `/home/job_node_config.lua`, `/home/scheduler.lua`, `/home/loader.lua`, `/home/target_editor.lua`, `/home/logger.lua`. |
 | `scheduler.lua` | broker | Cooperative task engine: `spawn`, `sleep`, `await`, fair `lock`. One clock (`computer.uptime`). Lets all 6 loads run concurrently without freezing the UI/telemetry. You never edit this to add features — you spawn a task. |
 | `loader.lua` | broker | One module's consumable-load sequence, run as a scheduler task. Confirms database fingerprints by read-back and routes items into the input bus by identity (not slot position). |
@@ -59,7 +59,7 @@ Each module has its own ME Interface adapter + transposer; one shared OC Databas
 3. **Identity-based item routing.** Items are moved into the input bus by matching their label in the interface buffer, not by trusting slot positions (the ME interface can shuffle buffer slots under load). Each load is verified before the machine is enabled; a bad load ERRORs and auto-recovers in ~10 s rather than running wrong.
 4. **Drone-first dispatch with a per-asteroid cap.** Uses the highest-tier available drones first, but no single asteroid may hold more than `floor(totalModules / 2) + 1` modules — so a high-tier target (e.g. Infinity Catalyst) can't starve lower-tier needs. Availability pools subtract drones/kits already committed to busy modules, preventing double-assignment.
 5. **Priority-mode boot prompt.** At startup, choose *Threshold* (mine the lowest stock/target ratio first) or *Rarity* (highest dust-priority first, then ratio).
-6. **Remote target editor.** A separate OC computer provides a responsive UI while the broker continues mining. The broker validates, saves, and applies submitted targets over port 2027.
+6. **Remote target editor.** A separate OC computer provides a responsive UI while the broker continues mining. It sends requests to the broker on port 2026 and listens for replies on port 2028; the broker validates, saves, and applies submitted targets.
 
 **Throughput:** all 6 modules load in ~1–2 s each and mine in parallel. Measured ~9.4× the earlier blocking design (≈100k → ≈938k Infinity Catalyst dust/hr), confirmed stable over a 12-hour soak test.
 
@@ -85,7 +85,7 @@ Loaded by every node with `dofile("/home/config.lua")`. Sections:
 8. **Dust target registry** — maps each tracked dust/item name to its source asteroid and a priority number
 9. **Module filter blacklist** — high-volume junk ores to exclude from module output
 10. **Resolved dust stock targets** — validates `target_config.lua` and builds the internal `config.conditions` list
-11. **Network settings** — `config.ports` (telemetry=2026; target-editor/command=2027), `config.pipelineCheckDelay` (default 30 s)
+11. **Network settings** — `config.ports` (broker inbound=2026; job commands=2027; editor replies=2028), `config.pipelineCheckDelay` (default 30 s)
 
 ---
 
@@ -408,7 +408,9 @@ On a separate computer, install the **Target editor** role or copy:
 /home/target_editor_app.lua
 ```
 
-Run `target_editor_app`. It discovers the broker wirelessly on port 2027.
+Run `target_editor_app`. It retries broker discovery on port 2026 and listens
+for the broker's direct answer on port 2028. Both computers must use the current
+`config.lua`; the connection screen prints the two effective ports.
 
 ### 5. Multi-node fleets (future / optional)
 

@@ -899,8 +899,9 @@ config.reloadTargets()
 -- 11. NETWORK & RUNTIME SETTINGS
 --------------------------------------------------------------------------------
 config.ports = {
-  telemetry = 2026,  -- inbound to broker: telem nodes + job nodes → broker
-  command   = 2027   -- target editor RPC + optional broker → job-node commands
+  telemetry  = 2026, -- inbound to broker: telemetry, status, editor requests
+  command    = 2027, -- broker → remote job-node commands
+  targetEditor = 2028 -- inbound to editor: broker replies
 }
 
 -- Seconds to wait after a job run before re-checking dust levels.

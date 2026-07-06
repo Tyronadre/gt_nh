@@ -113,6 +113,7 @@ local brokerState = {
   dust = {}, plasma = {}, drones = {}, drills = {}, jobs = {}, cooldowns = {},
   lastDustSyncTime = 0, lastFluidSyncTime = 0, lastHWSyncTime = 0,
   lastDustSync = "--:--:--", lastFluidSync = "--:--:--", lastHWSync = "--:--:--",
+  lastEditorContactTime = 0, lastEditorContact = "--:--:--",
   nextTarget = nil, telemetryReady = false, awaitingDustRefresh = true,
   dustBatchId = nil, dustChunks = {},
   priorityMode = "threshold",  -- "threshold" (lowest fill first) | "rarity" (dust priority first)
@@ -485,15 +486,36 @@ end
 -- TELEMETRY
 -- =============================================================================
 
-local function sendTargetEditorReply(address, requestId, success, message, settings)
-  modem.send(address, config.ports.command, serial.serialize({
+local function validPort(value)
+  return type(value) == "number" and value >= 1 and value <= 65535 and
+         value == math.floor(value)
+end
+
+local function sendTargetEditorReply(address, responsePort, requestId,
+                                     success, message, settings)
+  local packet = serial.serialize({
     protocol = "MEDINA_TARGET_EDITOR",
     payloadType = "TARGET_CONFIG_RESULT",
     requestId = requestId,
     success = success,
     message = message,
     settings = settings,
-  }))
+  })
+
+  if #packet > modem.maxPacketSize() then
+    logger:error("[EDITOR] Reply exceeds modem packet limit (" .. #packet ..
+                 "/" .. modem.maxPacketSize() .. " bytes)")
+    return false
+  end
+
+  local ok, sent = pcall(modem.send, address, responsePort, packet)
+  if not ok or not sent then
+    logger:error("[EDITOR] Could not reply to " .. tostring(address) ..
+                 " on port " .. tostring(responsePort) .. ": " ..
+                 tostring(ok and "modem.send returned false" or sent))
+    return false
+  end
+  return true
 end
 
 local function processMessage(evType, _, remoteAddress, port, _, rawMsg)
@@ -501,14 +523,25 @@ local function processMessage(evType, _, remoteAddress, port, _, rawMsg)
   local ok, msg = pcall(serial.unserialize, rawMsg)
   if not ok or type(msg) ~= "table" then return end
 
-  if msg.protocol == "MEDINA_TARGET_EDITOR" and port == config.ports.command then
+  -- New editors discover the broker over its normal inbound bus (2026) and
+  -- receive replies on their dedicated port (2028). Accept 2027 as well so an
+  -- editor computer can be upgraded before the broker without losing contact.
+  local isEditorPort = port == config.ports.telemetry or
+                       port == config.ports.command
+  if msg.protocol == "MEDINA_TARGET_EDITOR" and isEditorPort then
+    local responsePort = validPort(msg.replyPort) and msg.replyPort or port
+    brokerState.lastEditorContactTime = os.time()
+    brokerState.lastEditorContact = os.date("%X")
+    logger:info("[EDITOR] " .. tostring(msg.payloadType) .. " from " ..
+                tostring(remoteAddress) .. ", reply port " .. responsePort)
+
     if msg.payloadType == "TARGET_CONFIG_REQUEST" then
-      sendTargetEditorReply(remoteAddress, msg.requestId, true,
+      sendTargetEditorReply(remoteAddress, responsePort, msg.requestId, true,
                             "Current broker targets", config.targetSettings)
     elseif msg.payloadType == "TARGET_CONFIG_APPLY" then
       local valid, validationError = pcall(config.buildTargetConditions, msg.settings)
       if not valid then
-        sendTargetEditorReply(remoteAddress, msg.requestId, false,
+        sendTargetEditorReply(remoteAddress, responsePort, msg.requestId, false,
                               "Validation failed: " .. tostring(validationError))
         return
       end
@@ -516,19 +549,19 @@ local function processMessage(evType, _, remoteAddress, port, _, rawMsg)
       local saved, saveError = targetEditorModule.writeSettings(
         config.targetConfigPath or "/home/target_config.lua", msg.settings)
       if not saved then
-        sendTargetEditorReply(remoteAddress, msg.requestId, false,
+        sendTargetEditorReply(remoteAddress, responsePort, msg.requestId, false,
                               "Save failed: " .. tostring(saveError))
         return
       end
 
       local applied, applyError = pcall(applyRuntimeTargets, msg.settings)
       if not applied then
-        sendTargetEditorReply(remoteAddress, msg.requestId, false,
+        sendTargetEditorReply(remoteAddress, responsePort, msg.requestId, false,
                               "Runtime apply failed: " .. tostring(applyError))
         return
       end
 
-      sendTargetEditorReply(remoteAddress, msg.requestId, true,
+      sendTargetEditorReply(remoteAddress, responsePort, msg.requestId, true,
                             #config.conditions .. " targets saved and applied",
                             config.targetSettings)
     end
@@ -706,6 +739,9 @@ local function drawHWPanel()
   row = row + 1
   clear(row); term.setCursor(P3 + 1, row)
   gpu.setForeground(getSyncColor(brokerState.lastHWSyncTime)); io.write("  HW:     " .. brokerState.lastHWSync)
+  row = row + 1
+  clear(row); term.setCursor(P3 + 1, row)
+  gpu.setForeground(getSyncColor(brokerState.lastEditorContactTime)); io.write("  Editor: " .. brokerState.lastEditorContact)
   row = row + 2
 
   clear(row); term.setCursor(P3 + 1, row)
@@ -800,7 +836,8 @@ local function drawStaticFrame()
   gpu.fill(1, 1, W, 1, "="); gpu.fill(1, 5, W, 1, "=")
   term.setCursor(2, 2); gpu.setForeground(0xFFFFFF); io.write("MEDINA BROKER MK3  (v1.5)")
   term.setCursor(2, 3); gpu.setForeground(0x666666)
-  io.write("REMOTE TARGET EDITOR: PORT " .. config.ports.command)
+  io.write("TARGET EDITOR: REQUEST " .. config.ports.telemetry ..
+           " / REPLY " .. (config.ports.targetEditor or 2028))
   term.setCursor(P1 + 1, 4); io.write("MODULES")
   term.setCursor(P2 + 1, 4); io.write("DUST STOCK")
   term.setCursor(P3 + 1, 4); io.write("HARDWARE")
@@ -889,7 +926,7 @@ else
   logger:error("Modem NOT open on port " .. config.ports.telemetry)
 end
 if not modem.isOpen(config.ports.command) then
-  logger:error("Modem NOT open on target editor port " .. config.ports.command)
+  logger:error("Modem NOT open on legacy editor port " .. config.ports.command)
 end
 
 -- Each part of the loop runs at the cadence it actually needs, so the heavy GPU
