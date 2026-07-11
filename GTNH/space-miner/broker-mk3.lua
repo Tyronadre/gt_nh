@@ -101,8 +101,10 @@ for i, mc in ipairs(nodeConf.modules) do
     doneTime   = nil,
     loadHandle = nil,     -- scheduler task handle while LOADING
     loadResult = nil,     -- set by the load task: { ok=bool, err=?, stats=? }
+    cleanupHandle = nil,  -- scheduler task handle while DONE cleanup runs
     lastError  = nil,     -- full user-facing reason for the latest failure
     errorStage = nil,
+    nextActivePoll = 0,
   }
 end
 logger:info(string.format(
@@ -154,6 +156,7 @@ local P3 = math.floor(W * 2 / 3) + 1
 local PW = P2 - 2
 
 local DISPATCH_INTERVAL = 0.2
+local ACTIVE_POLL_INTERVAL = 0.5
 local lastDispatchCheck = 0
 local ERROR_TIMEOUT = 10 -- real seconds; keep detailed errors visible before retry
 local lastErrorTime = {}
@@ -176,20 +179,22 @@ end
 -- MODULE LIFECYCLE
 -- =============================================================================
 
-local function returnItemsToME(mod)
+local function returnItemsToME(mod, cooperative)
   local busSize = mod.transposer.getInventorySize(mod.conf.inputBusSide) or 16
   for slot = 1, busSize do
     local size = mod.transposer.getSlotStackSize(mod.conf.inputBusSide, slot) or 0
     if size > 0 then
       mod.transposer.transferItem(mod.conf.inputBusSide, mod.conf.interfaceSide, size, slot)
     end
+    if cooperative then sched.sleep(0) end
   end
 end
 
-local function clearInterfaceSlots(mod)
-  mod.iface.setInterfaceConfiguration(1)
-  mod.iface.setInterfaceConfiguration(2)
-  mod.iface.setInterfaceConfiguration(3)
+local function clearInterfaceSlots(mod, cooperative)
+  for slot = 1, 3 do
+    mod.iface.setInterfaceConfiguration(slot)
+    if cooperative then sched.sleep(0) end
+  end
 end
 
 local function getOptimalDistance(moduleTier, asteroid, droneKey)
@@ -265,6 +270,7 @@ local function pollLoad(mod)
     if started then
       mod.status = "RUNNING"
       mod.job.startTime = os.time()
+      mod.nextActivePoll = 0
       mod.lastError = nil
       mod.errorStage = nil
     else
@@ -276,6 +282,9 @@ local function pollLoad(mod)
 end
 
 local function stepRunning(mod)
+  local now = computer.uptime()
+  if mod.nextActivePoll and now < mod.nextActivePoll then return end
+  mod.nextActivePoll = now + ACTIVE_POLL_INTERVAL
   if not mod.adapter.isMachineActive() then
     mod.status = "DONE"
     mod.adapter.setWorkAllowed(false)
@@ -285,9 +294,22 @@ end
 local function stepDone(mod)
   if not mod.doneTime then
     mod.doneTime = os.time()
-    returnItemsToME(mod)
-    clearInterfaceSlots(mod)
-    mod.adapter.setWorkAllowed(false)
+    mod.cleanupHandle = sched.spawn(function()
+      returnItemsToME(mod, true)
+      clearInterfaceSlots(mod, true)
+      mod.adapter.setWorkAllowed(false)
+    end, "cleanup-M" .. mod.index)
+    return
+  end
+
+  if mod.cleanupHandle then
+    if not mod.cleanupHandle:done() then return end
+    local cleanupError = mod.cleanupHandle:error()
+    mod.cleanupHandle = nil
+    if cleanupError then
+      setModuleError(mod, "done cleanup", cleanupError)
+      return
+    end
   elseif os.time() - mod.doneTime >= 1 then
     if mod.job and brokerState.jobs[mod.job.jobId] then
       brokerState.jobs[mod.job.jobId] = nil
@@ -573,26 +595,29 @@ local function sendTargetEditorReply(address, responsePort, requestId,
 end
 
 local function acceptTargetSettings(settings, revision)
+  local submittedSignature
+  if type(revision) == "string" and revision ~= "" then
+    submittedSignature = "dust:" .. revision
+  else
+    local serialized, serializedSettings = pcall(serial.serialize, settings)
+    if not serialized then
+      local message = "Could not serialize submitted targets: " ..
+                      tostring(serializedSettings)
+      logger:error("[TARGETS] " .. message)
+      return false, message
+    end
+    submittedSignature = "rpc:" .. serializedSettings
+  end
+
+  if submittedSignature == targetSettingsSignature then
+    return true, "Broker targets already current"
+  end
+
   local valid, validationError = pcall(config.buildTargetConditions, settings)
   if not valid then
     local message = "Validation failed: " .. tostring(validationError)
     logger:error("[TARGETS] " .. message)
     return false, message
-  end
-
-  local serialized, serializedSettings = pcall(serial.serialize, settings)
-  if not serialized then
-    local message = "Could not serialize submitted targets: " ..
-                    tostring(serializedSettings)
-    logger:error("[TARGETS] " .. message)
-    return false, message
-  end
-
-  local submittedSignature = type(revision) == "string" and
-                             ("dust:" .. revision) or
-                             ("rpc:" .. serializedSettings)
-  if submittedSignature == targetSettingsSignature then
-    return true, "Broker targets already current"
   end
 
   local saved, saveError = targetEditorModule.writeSettings(
@@ -732,6 +757,9 @@ local function wrapText(text, width)
 end
 
 local function drawModulePanel()
+  if gpu == nil then
+    return
+  end
   local row = 6
   local function clear(r) gpu.fill(P1 + 1, r, PW, 1, " ") end
   for r = 6, H do clear(r) end  -- wipe column first; sections shift between frames
@@ -748,6 +776,9 @@ local function drawModulePanel()
       gpu.setForeground(0xFF4444)
       io.write(string.format("  M%d [%-5s]  ERROR: %s",
         mod.index, mod.tier, mod.errorStage or "unknown"))
+    elseif mod.status == "DONE" then
+      gpu.setForeground(0x00FF00)
+      io.write(string.format("  M%d [%-5s]  CLEANUP", mod.index, mod.tier))
     else
       gpu.setForeground(0x555555)
       io.write(string.format("  M%d [%-5s]  IDLE", mod.index, mod.tier))
@@ -788,6 +819,9 @@ local function drawModulePanel()
 end
 
 local function drawDustPanel()
+  if gpu == nil then
+    return
+  end
   local row = 6
   for r = 6, H do gpu.fill(P2 + 1, r, PW, 1, " ") end  -- wipe column first
   local list = {}
@@ -818,6 +852,9 @@ local function drawDustPanel()
 end
 
 local function drawHWPanel()
+  if gpu == nil then
+      return
+  end
   local row = 6
   local function clear(r) gpu.fill(P3 + 1, r, PW, 1, " ") end
 
@@ -1211,7 +1248,7 @@ while not stopRequested do
   local up = computer.uptime()
   if up - lastUIDraw >= UI_INTERVAL then
     if logViewActive then drawLogView() else drawUI() end
-    lastUIDraw = up
+    lastUIDraw = computer.uptime()
   end
 end
 

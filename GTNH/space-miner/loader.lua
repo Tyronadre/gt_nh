@@ -72,13 +72,15 @@ local function clearInputBus(mod)
     if size > 0 then
       mod.transposer.transferItem(mod.conf.inputBusSide, mod.conf.interfaceSide, size, slot)
     end
+    sched.sleep(0)
   end
 end
 
 local function clearInterfaceSlots(mod)
-  mod.iface.setInterfaceConfiguration(1)
-  mod.iface.setInterfaceConfiguration(2)
-  mod.iface.setInterfaceConfiguration(3)
+  for slot = 1, 3 do
+    mod.iface.setInterfaceConfiguration(slot)
+    sched.sleep(0)
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -113,8 +115,11 @@ function loader.run(mod, job, deps)
   --    accidentally read a previous job's fingerprint.
   clearInputBus(mod)
   db.clear(slotDrone)
+  sched.sleep(0)
   db.clear(slotTip)
+  sched.sleep(0)
   db.clear(slotRod)
+  sched.sleep(0)
 
   -- Wait for the interface buffer slots we're about to use to actually drain
   -- back into the ME network. If a leftover item (e.g. a drill tip from the
@@ -154,49 +159,48 @@ function loader.run(mod, job, deps)
 
   -- 3. Tell the interface to stock items matching those fingerprints.
   mod.iface.setInterfaceConfiguration(1, dbAddr, slotDrone, 1)
+  sched.sleep(0)
   mod.iface.setInterfaceConfiguration(2, dbAddr, slotTip, TIPS_PER)
+  sched.sleep(0)
   mod.iface.setInterfaceConfiguration(3, dbAddr, slotRod, RODS_PER)
+  sched.sleep(0)
 
   -- 4. Wait for all three items to arrive in the interface buffer, identified by
   --    LABEL anywhere in the buffer (not pinned to a slot position). The
   --    interface may place items in slots other than 1/2/3, so we search by
   --    identity. The actual slot is resolved again at transfer time.
   local ibufSize = mod.transposer.getInventorySize(mod.conf.interfaceSide) or 9
-  local function bufferAmount(label)
-    local amount = 0
+  local function readBufferCounts()
+    local counts = {}
     for s = 1, ibufSize do
       local stack = mod.transposer.getStackInSlot(mod.conf.interfaceSide, s)
-      if stack and stack.label == label then
-        amount = amount + (stack.size or 0)
+      if stack and stack.label then
+        counts[stack.label] = (counts[stack.label] or 0) + (stack.size or 0)
       end
     end
-    return amount
+    return counts
   end
 
-  local function bufferHas(label, minSize)
-    for s = 1, ibufSize do
-      local stack = mod.transposer.getStackInSlot(mod.conf.interfaceSide, s)
-      if stack and stack.label == label and (stack.size or 0) >= minSize then
-        return true
-      end
-    end
-    return false
+  local function bufferAmount(counts, label)
+    return counts[label] or 0
   end
 
   local arrived, polls = pollUntil(function()
-    return bufferHas(droneName, 1)
-       and bufferHas(drillEntry.tip, TIPS_PER)
-       and bufferHas(drillEntry.rod, RODS_PER)
+    local counts = readBufferCounts()
+    return bufferAmount(counts, droneName) >= 1
+       and bufferAmount(counts, drillEntry.tip) >= TIPS_PER
+       and bufferAmount(counts, drillEntry.rod) >= RODS_PER
   end, ARRIVE_TIMEOUT)
   stats.arrivePolls = polls
 
   if not arrived then
+    local counts = readBufferCounts()
     clearInterfaceSlots(mod)
     return false, "interface stock timeout after " .. ARRIVE_TIMEOUT ..
-                  "s: drone " .. bufferAmount(droneName) .. "/1 (" .. droneName ..
-                  "), tip " .. bufferAmount(drillEntry.tip) .. "/" .. TIPS_PER ..
+                  "s: drone " .. bufferAmount(counts, droneName) .. "/1 (" .. droneName ..
+                  "), tip " .. bufferAmount(counts, drillEntry.tip) .. "/" .. TIPS_PER ..
                   " (" .. drillEntry.tip .. "), rod " ..
-                  bufferAmount(drillEntry.rod) .. "/" .. RODS_PER ..
+                  bufferAmount(counts, drillEntry.rod) .. "/" .. RODS_PER ..
                   " (" .. drillEntry.rod .. ")"
   end
 
@@ -236,9 +240,15 @@ function loader.run(mod, job, deps)
   end
 
   local okMove, moveErr
-  okMove, moveErr = moveByIdentity(droneName,      1,        1, "drone"); if not okMove then clearInterfaceSlots(mod); return false, moveErr end
-  okMove, moveErr = moveByIdentity(drillEntry.tip, TIPS_PER, 2, "tip");   if not okMove then clearInterfaceSlots(mod); return false, moveErr end
-  okMove, moveErr = moveByIdentity(drillEntry.rod, RODS_PER, 3, "rod");   if not okMove then clearInterfaceSlots(mod); return false, moveErr end
+  okMove, moveErr = moveByIdentity(droneName, 1, 1, "drone")
+  if not okMove then clearInterfaceSlots(mod); return false, moveErr end
+  sched.sleep(0)
+  okMove, moveErr = moveByIdentity(drillEntry.tip, TIPS_PER, 2, "tip")
+  if not okMove then clearInterfaceSlots(mod); return false, moveErr end
+  sched.sleep(0)
+  okMove, moveErr = moveByIdentity(drillEntry.rod, RODS_PER, 3, "rod")
+  if not okMove then clearInterfaceSlots(mod); return false, moveErr end
+  sched.sleep(0)
 
   clearInterfaceSlots(mod)
   sched.sleep(0.2)
